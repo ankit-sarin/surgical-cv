@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+.env
+*.db
+chroma_db/
+data/
+*.pyc
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+primer.md
