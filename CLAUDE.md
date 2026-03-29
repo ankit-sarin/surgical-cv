@@ -6,10 +6,10 @@ Read primer.md for current project state before starting work.
 ~/projects/surgical-cv
 
 ## Deployment
-None. This is research code — no systemd services, no Gradio apps, no Cloudflare tunnels.
+No deployed services yet. Future services will follow global conventions (systemd + Cloudflare Tunnel).
 
 ## Purpose
-Computer vision research on surgical video: phase recognition, instrument detection, and dataset curation. Targets ~3 publications: (1) dataset/benchmark paper, (2) phase recognition model, (3) clinical application (AI-assisted video editing).
+End-to-end surgical video research: FFmpeg de-identification pipeline (raw → deid), dataset preprocessing, annotation tooling, phase recognition, instrument detection, model training/evaluation, and future deployed services. Targets ~3 publications: (1) dataset/benchmark paper, (2) phase recognition model, (3) clinical application (AI-assisted video editing).
 
 ## PI & Context
 - **PI:** Ankit Sarin, MD — Chief, Colorectal Surgery, UC Davis Health
@@ -17,14 +17,33 @@ Computer vision research on surgical video: phase recognition, instrument detect
 - **IRB:** Approved; de-identification SOP in place
 - **Hardware:** NVIDIA DGX Spark (Blackwell GB10, 128GB unified memory)
 
-## Data Sources
+## Data Sources (STRIVE NAS via NFS)
+
+### Raw OR Video (PHI — read-only)
 | Path | Contents |
 |------|----------|
-| /mnt/nas/deid-sarin/ | De-identified OR video (PI's cases) |
-| /mnt/nas/deid-shared/ | De-identified OR video (shared) |
-| /mnt/nas/research-datasets/ | Public datasets (Cholec80, CholecT50, etc.) |
+| /mnt/nas/or-raw/ | Raw OR video (all surgeons, PHI) |
+| /mnt/nas/raw-sarin/ | Raw video — Sarin cases |
+| /mnt/nas/raw-miller/ | Raw video — Miller cases |
 
-All video is accessed read-only via NFS from the STRIVE NAS. Raw video never copied into this repo.
+### De-identified Output (read-write)
+| Path | Contents |
+|------|----------|
+| /mnt/nas/deid-sarin/ | De-identified video — Sarin cases |
+| /mnt/nas/deid-miller/ | De-identified video — Miller cases |
+
+### Collaboration Shares (read-write)
+| Path | Contents |
+|------|----------|
+| /mnt/nas/deid-shared/ | De-identified video — shared pool |
+| /mnt/nas/deid-plum/ | De-identified video — PLUM Lab share |
+
+### Public Datasets
+| Path | Contents |
+|------|----------|
+| /mnt/nas/research-datasets/ | Cholec80, CholecT50, etc. |
+
+Raw video is never copied into this repo. NAS paths are referenced, not duplicated.
 
 ## Project Structure
 ```
@@ -34,6 +53,7 @@ surgical-cv/
 ├── requirements.txt
 ├── pyproject.toml         # pytest config
 ├── src/
+│   ├── deid/              # FFmpeg de-identification pipeline (raw → deid)
 │   ├── data/              # Dataset loaders, video readers, frame samplers
 │   ├── models/            # Model definitions (phase recognition, detection)
 │   ├── training/          # Training loops, loss functions, schedulers
@@ -46,21 +66,15 @@ surgical-cv/
 └── data/                  # gitignored — local caches, extracted frames, annotations
 ```
 
-## Scope Boundaries
-**In scope:**
-- Video frame extraction and preprocessing (FFmpeg)
+## Scope
+- FFmpeg de-identification pipeline (raw → deid)
+- Video frame extraction and preprocessing
+- Dataset curation tooling (annotation, splits, statistics)
 - Surgical phase recognition models
 - Instrument detection models
-- Dataset curation tooling (annotation, splits, statistics)
 - Benchmark evaluation against public datasets
 - Publication figures and tables
-
-**Out of scope (lives elsewhere):**
-- De-identification pipeline (~/scripts/ or separate project)
-- Gradio apps or web UIs
-- Cloudflare deployments
-- RAG pipelines
-- Operative report generation (~/projects/operativereports/)
+- Future deployed services (Gradio, APIs) as needed
 
 ## Inference
 - **Primary:** Ollama at localhost:11434 for local LLM tasks (annotation assistance, etc.)
@@ -74,6 +88,7 @@ surgical-cv/
 - Frame extraction is a preprocessing step, cached in data/ (gitignored)
 - Public dataset loaders should handle Cholec80/CholecT50 directory conventions
 - Cross-family model verification for any LLM-assisted annotation
+- De-identification pipeline reads from raw (read-only) and writes to deid (read-write)
 
 ## Running
 ```bash
@@ -83,6 +98,9 @@ source venv/bin/activate
 # Tests
 python -m pytest tests/ -v
 python -m pytest tests/ -v -m "not slow"    # skip long-running tests
+
+# De-identification (example)
+python scripts/deid_video.py --input /mnt/nas/raw-sarin/case_001.mp4 --output /mnt/nas/deid-sarin/
 
 # Frame extraction (example)
 python scripts/extract_frames.py --config configs/cholec80_frames.yaml
