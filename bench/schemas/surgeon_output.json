@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["case_manifest", "needs_clarification", "clarification_prompts"],
+  "properties": {
+    "case_manifest": {
+      "type": "object",
+      "required": ["surgeon", "case_date", "or_room", "procedure_name", "approach", "indication", "notes"],
+      "properties": {
+        "surgeon": {"type": ["string", "null"]},
+        "case_date": {"type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+        "or_room": {"type": ["string", "null"]},
+        "procedure_name": {"type": ["string", "null"]},
+        "approach": {"type": ["string", "null"]},
+        "indication": {"type": ["string", "null"]},
+        "notes": {"type": ["string", "null"]}
+      }
+    },
+    "needs_clarification": {"type": "boolean"},
+    "clarification_prompts": {"type": "array", "items": {"type": "string"}}
+  }
+}

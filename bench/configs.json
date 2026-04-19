@@ -1,0 +1,65 @@
+[
+  {
+    "config_id": "diag_qwen3_32b_think",
+    "role": "diagnostician",
+    "model": "qwen3:32b",
+    "thinking_mode": "on",
+    "thinking_mechanism": "qwen3_default",
+    "notes": "Qwen3 thinks by default; no special token needed. Thinking block appears in response.",
+    "ollama_options": {"temperature": 0.1, "num_ctx": 8192}
+  },
+  {
+    "config_id": "diag_qwen3_32b_nothink",
+    "role": "diagnostician",
+    "model": "qwen3:32b",
+    "thinking_mode": "off",
+    "thinking_mechanism": "qwen3_no_think_suffix",
+    "notes": "Append /no_think to user message to suppress thinking.",
+    "ollama_options": {"temperature": 0.1, "num_ctx": 8192}
+  },
+  {
+    "config_id": "diag_gemma4_31b_think",
+    "role": "diagnostician",
+    "model": "gemma4:31b",
+    "thinking_mode": "on",
+    "thinking_mechanism": "gemma4_think_token",
+    "notes": "Prepend <|think|> token to system prompt to enable thinking mode.",
+    "ollama_options": {"temperature": 0.1, "num_ctx": 8192}
+  },
+  {
+    "config_id": "diag_gemma4_31b_nothink",
+    "role": "diagnostician",
+    "model": "gemma4:31b",
+    "thinking_mode": "off",
+    "thinking_mechanism": "gemma4_no_think_token",
+    "notes": "Omit <|think|> token from system prompt to disable thinking mode.",
+    "ollama_options": {"temperature": 0.1, "num_ctx": 8192}
+  },
+  {
+    "config_id": "surg_qwen3_30b_instruct",
+    "role": "surgeon",
+    "model": "qwen3:30b-instruct",
+    "thinking_mode": "off",
+    "thinking_mechanism": "none",
+    "notes": "Qwen3 2507 instruct variant — non-thinking by design, no toggle needed.",
+    "ollama_options": {"temperature": 0.1, "num_ctx": 8192}
+  },
+  {
+    "config_id": "surg_gemma4_26b_think",
+    "role": "surgeon",
+    "model": "gemma4:26b",
+    "thinking_mode": "on",
+    "thinking_mechanism": "gemma4_think_token",
+    "notes": "MoE model (3.8B active params). Prepend <|think|> to system prompt.",
+    "ollama_options": {"temperature": 0.1, "num_ctx": 8192}
+  },
+  {
+    "config_id": "surg_gemma4_26b_nothink",
+    "role": "surgeon",
+    "model": "gemma4:26b",
+    "thinking_mode": "off",
+    "thinking_mechanism": "gemma4_no_think_token",
+    "notes": "MoE model. Omit <|think|> to disable thinking mode.",
+    "ollama_options": {"temperature": 0.1, "num_ctx": 8192}
+  }
+]

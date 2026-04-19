@@ -1,0 +1,234 @@
+[
+  {
+    "case_id": "D01",
+    "role": "diagnostician",
+    "input": {
+      "ffprobe_output": "ffprobe version 6.1.1 Copyright (c) 2007-2024 the FFmpeg developers\nInput #0, mov,mp4,m4v,m3u8, from '/mnt/nas/deid-sarin/UCD-FIL-001_video.mp4':\n  Metadata:\n    major_brand     : isom\n    minor_version   : 512\n    compatible_brands: isomiso2avc1mp41\n    encoder         : Lavf60.16.100\n  Duration: 02:21:12.47, start: 0.000000, bitrate: 8547 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1920x1080 [SAR 1:1 DAR 16:9], 8545 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n    Metadata:\n      handler_name    : VideoHandler\n      vendor_id       : [0][0][0][0]",
+      "exiftool_output": "ExifTool Version Number         : 12.76\nFile Name                       : UCD-FIL-001_video.mp4\nDirectory                       : /mnt/nas/deid-sarin\nFile Size                       : 8.6 GB\nFile Modification Date/Time     : 2026:04:15 14:22:31-07:00\nFile Access Date/Time           : 2026:04:15 14:23:01-07:00\nFile Inode Change Date/Time     : 2026:04:15 14:22:31-07:00\nFile Permissions                : -rw-r--r--\nFile Type                       : MP4\nFile Type Extension             : mp4\nMIME Type                       : video/mp4\nMajor Brand                     : ISO Base Media file (ISOM) v2\nMinor Version                   : 512\nCompatible Brands               : isom, iso2, avc1, mp41\nMedia Duration                  : 2:21:12\nImage Width                     : 1920\nImage Height                    : 1080\nImage Size                      : 1920x1080\nRotation                        : 0\nAvg Bitrate                     : 8.55 Mbps\nVideo Frame Rate                : 30\nTrack Duration                  : 2:21:12.47\nVideo Frame Count               : 253874",
+      "ffmpeg_stderr": "ffmpeg version 6.1.1 Copyright (c) 2000-2024 the FFmpeg developers\nInput #0, mov,mp4,m4v,m3u8, from '/mnt/nas/raw-sarin/UCD-FIL-001_raw.mp4':\n  Duration: 02:21:12.47, start: 0.000000, bitrate: 9234 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1920x1080, 8545 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 128 kb/s (default)\nStream mapping:\n  Stream #0:0 -> #0:0 (h264 (native) -> h264 (libx264))\nOutput #0, mp4, to '/mnt/nas/deid-sarin/UCD-FIL-001_video.mp4':\n  Stream #0:0(und): Video: h264 (avc1 / 0x31637661), yuv420p(progressive), 1920x1080, q=2-31, 8545 kb/s, 30 fps, 15360 tbn (default)\nframe=253874 fps=142 q=-1.0 Lsize= 8847562kB time=02:21:12.47 bitrate=8547.2kbits/s speed=4.73x\nvideo:8847326kB audio:0kB subtitle:0kB other streams:0kB global headers:0kB muxing overhead: 0.002669%"
+    },
+    "expected_verdict": "pass",
+    "expected_category": "none"
+  },
+  {
+    "case_id": "D02",
+    "role": "diagnostician",
+    "input": {
+      "ffprobe_output": "ffprobe version 6.1.1 Copyright (c) 2007-2024 the FFmpeg developers\nInput #0, mov,mp4,m4v,m3u8, from '/mnt/nas/deid-miller/UCD-FIL-014_video.mp4':\n  Metadata:\n    major_brand     : isom\n    minor_version   : 512\n    compatible_brands: isomiso2avc1mp41\n    encoder         : Lavf60.16.100\n  Duration: 01:47:33.20, start: 0.000000, bitrate: 9102 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1920x1080 [SAR 1:1 DAR 16:9], 8974 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n    Metadata:\n      handler_name    : VideoHandler\n      vendor_id       : [0][0][0][0]\n  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 128 kb/s (default)\n    Metadata:\n      handler_name    : SoundHandler\n      vendor_id       : [0][0][0][0]",
+      "exiftool_output": "ExifTool Version Number         : 12.76\nFile Name                       : UCD-FIL-014_video.mp4\nDirectory                       : /mnt/nas/deid-miller\nFile Size                       : 7.1 GB\nFile Modification Date/Time     : 2026:04:12 09:45:18-07:00\nFile Type                       : MP4\nMIME Type                       : video/mp4\nMajor Brand                     : ISO Base Media file (ISOM) v2\nMinor Version                   : 512\nCompatible Brands               : isom, iso2, avc1, mp41\nMedia Duration                  : 1:47:33\nImage Width                     : 1920\nImage Height                    : 1080\nAvg Bitrate                     : 9.10 Mbps\nVideo Frame Rate                : 30\nAudio Format                    : mp4a\nAudio Channels                  : 2\nAudio Sample Rate               : 48000\nAudio Bits Per Sample           : 16\nTrack Duration                  : 1:47:33.20",
+      "ffmpeg_stderr": "ffmpeg version 6.1.1 Copyright (c) 2000-2024 the FFmpeg developers\nInput #0, mov,mp4,m4v,m3u8, from '/mnt/nas/raw-miller/UCD-FIL-014_raw.mp4':\n  Duration: 01:47:33.20, start: 0.000000, bitrate: 9234 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1920x1080, 8974 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 128 kb/s (default)\nStream mapping:\n  Stream #0:0 -> #0:0 (copy)\n  Stream #0:1 -> #0:1 (copy)\nOutput #0, mp4, to '/mnt/nas/deid-miller/UCD-FIL-014_video.mp4':\n  Stream #0:0(und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1920x1080, 8974 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n  Stream #0:1(und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 128 kb/s (default)\nframe=193596 fps=387 q=-1.0 Lsize= 7340128kB time=01:47:33.20 bitrate=9102.4kbits/s speed=12.9x\nvideo:7208832kB audio:131296kB subtitle:0kB other streams:0kB global headers:0kB muxing overhead: 0.000%"
+    },
+    "expected_verdict": "fail",
+    "expected_category": "audio_leak"
+  },
+  {
+    "case_id": "D03",
+    "role": "diagnostician",
+    "input": {
+      "ffprobe_output": "ffprobe version 6.1.1 Copyright (c) 2007-2024 the FFmpeg developers\nInput #0, mov,mp4,m4v,m3u8, from '/mnt/nas/deid-noren/UCD-FIL-027_video.mp4':\n  Metadata:\n    major_brand     : isom\n    minor_version   : 512\n    compatible_brands: isomiso2avc1mp41\n    encoder         : Lavf60.16.100\n  Duration: 01:55:41.80, start: 0.000000, bitrate: 8321 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1920x1080 [SAR 1:1 DAR 16:9], 8319 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n    Metadata:\n      handler_name    : VideoHandler\n      vendor_id       : [0][0][0][0]",
+      "exiftool_output": "ExifTool Version Number         : 12.76\nFile Name                       : UCD-FIL-027_video.mp4\nDirectory                       : /mnt/nas/deid-noren\nFile Size                       : 6.9 GB\nFile Modification Date/Time     : 2026:04:10 11:32:07-07:00\nFile Type                       : MP4\nMIME Type                       : video/mp4\nMajor Brand                     : ISO Base Media file (ISOM) v2\nMinor Version                   : 512\nCompatible Brands               : isom, iso2, avc1, mp41\nMake                            : SteCam\nModel                           : HD Capture 4000\nSoftware                        : BDV Archive 6.2\nMedia Duration                  : 1:55:42\nImage Width                     : 1920\nImage Height                    : 1080\nAvg Bitrate                     : 8.32 Mbps\nVideo Frame Rate                : 30\nTrack Duration                  : 1:55:41.80",
+      "ffmpeg_stderr": "ffmpeg version 6.1.1 Copyright (c) 2000-2024 the FFmpeg developers\nInput #0, mov,mp4,m4v,m3u8, from '/mnt/nas/raw-noren/UCD-FIL-027_raw.mp4':\n  Duration: 01:55:41.80, start: 0.000000, bitrate: 9456 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1920x1080, 8319 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 128 kb/s (default)\nStream mapping:\n  Stream #0:0 -> #0:0 (h264 (native) -> h264 (libx264))\nOutput #0, mp4, to '/mnt/nas/deid-noren/UCD-FIL-027_video.mp4':\n  Stream #0:0(und): Video: h264 (avc1 / 0x31637661), yuv420p(progressive), 1920x1080, q=2-31, 8319 kb/s, 30 fps, 15360 tbn (default)\nframe=208854 fps=135 q=-1.0 Lsize= 7118234kB time=01:55:41.80 bitrate=8321.1kbits/s speed=4.50x\nvideo:7117998kB audio:0kB subtitle:0kB other streams:0kB global headers:0kB muxing overhead: 0.003321%"
+    },
+    "expected_verdict": "fail",
+    "expected_category": "metadata_leak"
+  },
+  {
+    "case_id": "D04",
+    "role": "diagnostician",
+    "input": {
+      "ffprobe_output": "ffprobe version 6.1.1 Copyright (c) 2007-2024 the FFmpeg developers\nInput #0, mov,mp4,m4v,m3u8, from '/mnt/nas/deid-flynn/UCD-FIL-031_video.mp4':\n  Metadata:\n    major_brand     : isom\n    minor_version   : 512\n    compatible_brands: isomiso2avc1mp41\n    encoder         : Lavf60.16.100\n  Duration: 03:14:08.93, start: 0.000000, bitrate: 8890 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1920x1080 [SAR 1:1 DAR 16:9], 8888 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n    Metadata:\n      handler_name    : VideoHandler\n      vendor_id       : [0][0][0][0]",
+      "exiftool_output": "ExifTool Version Number         : 12.76\nFile Name                       : UCD-FIL-031_video.mp4\nDirectory                       : /mnt/nas/deid-flynn\nFile Size                       : 12.4 GB\nFile Modification Date/Time     : 2026:04:08 16:11:42-07:00\nFile Type                       : MP4\nMIME Type                       : video/mp4\nMajor Brand                     : ISO Base Media file (ISOM) v2\nMinor Version                   : 512\nCompatible Brands               : isom, iso2, avc1, mp41\nMedia Duration                  : 3:14:09\nImage Width                     : 1920\nImage Height                    : 1080\nAvg Bitrate                     : 8.89 Mbps\nVideo Frame Rate                : 30\nTrack Duration                  : 3:14:08.93",
+      "ffmpeg_stderr": "ffmpeg version 6.1.1 Copyright (c) 2000-2024 the FFmpeg developers\nInput #0, mov,mp4,m4v,m3u8, from '/mnt/nas/raw-flynn/UCD-FIL-031_raw.mp4':\n  Duration: 03:14:08.93, start: 0.000000, bitrate: 9567 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1920x1080, 8888 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 128 kb/s (default)\nStream mapping:\n  Stream #0:0 -> #0:0 (h264 (native) -> h264 (libx264))\nOutput #0, mp4, to '/mnt/nas/deid-flynn/UCD-FIL-031_video.mp4':\n  Stream #0:0(und): Video: h264 (avc1 / 0x31637661), yuv420p(progressive), 1920x1080, q=2-31, 8888 kb/s, 30 fps, 15360 tbn (default)\n[mp4 @ 0x55a3c2f1e800] Non-monotonous DTS in output stream 0:0; previous: 1440, current: 720, changing to 1441. This may result in incorrect timestamps in the output file.\n[mp4 @ 0x55a3c2f1e800] Non-monotonous DTS in output stream 0:0; previous: 2880, current: 1440, changing to 2881. This may result in incorrect timestamps in the output file.\n[mp4 @ 0x55a3c2f1e800] Non-monotonous DTS in output stream 0:0; previous: 4320, current: 2160, changing to 4321. This may result in incorrect timestamps in the output file.\n[mp4 @ 0x55a3c2f1e800] Non-monotonous DTS in output stream 0:0; previous: 5760, current: 2880, changing to 5761. This may result in incorrect timestamps in the output file.\n[mp4 @ 0x55a3c2f1e800] Non-monotonous DTS in output stream 0:0; previous: 7200, current: 3600, changing to 7201. This may result in incorrect timestamps in the output file.\n... (repeated 247 more times)\n[mp4 @ 0x55a3c2f1e800] Non-monotonous DTS in output stream 0:0; previous: 362880, current: 181440, changing to 362881. This may result in incorrect timestamps in the output file.\nframe=349468 fps=98 q=-1.0 Lsize=12812345kB time=03:14:08.93 bitrate=8890.2kbits/s speed=3.27x\nvideo:12812109kB audio:0kB subtitle:0kB other streams:0kB global headers:0kB muxing overhead: 0.001845%"
+    },
+    "expected_verdict": "fail",
+    "expected_category": "codec_error"
+  },
+  {
+    "case_id": "D05",
+    "role": "diagnostician",
+    "input": {
+      "ffprobe_output": "ffprobe version 6.1.1 Copyright (c) 2007-2024 the FFmpeg developers\n/mnt/nas/deid-kucejko/UCD-FIL-042_video.mp4: Invalid data found when processing input",
+      "exiftool_output": "ExifTool Version Number         : 12.76\nFile Name                       : UCD-FIL-042_video.mp4\nDirectory                       : /mnt/nas/deid-kucejko\nFile Size                       : 3.2 GB\nFile Modification Date/Time     : 2026:04:06 08:19:55-07:00\nFile Type                       : MP4\nMIME Type                       : video/mp4\nWarning                         : Invalid MP4 box size\nError                           : Truncated MP4 file",
+      "ffmpeg_stderr": "ffmpeg version 6.1.1 Copyright (c) 2000-2024 the FFmpeg developers\nConcatenating 6 segments via concat demuxer:\n  segment 1: /mnt/nas/raw-kucejko/capt0_20260403-071522.mp4 [OK]\n  segment 2: /mnt/nas/raw-kucejko/capt0_20260403-073044.mp4 [OK]\n  segment 3: /mnt/nas/raw-kucejko/capt0_20260403-074612.mp4\n[mov,mp4,m4v,m3u8 @ 0x55a3c2f1e800] moov atom not found\n/mnt/nas/raw-kucejko/capt0_20260403-074612.mp4: Invalid data found when processing input\nSegment 3 of 6: error reading input — file may be corrupt or incomplete.\nConversion failed!"
+    },
+    "expected_verdict": "fail",
+    "expected_category": "file_corruption"
+  },
+  {
+    "case_id": "D06",
+    "role": "diagnostician",
+    "input": {
+      "ffprobe_output": "ffprobe version 6.1.1 Copyright (c) 2007-2024 the FFmpeg developers\nInput #0, mov,mp4,m4v,m3u8, from '/mnt/nas/deid-sarin/UCD-FIL-005_video.mp4':\n  Metadata:\n    major_brand     : isom\n    minor_version   : 512\n    compatible_brands: isomiso2avc1mp41\n    encoder         : Lavf60.16.100\n  Duration: 02:05:22.13, start: 0.000000, bitrate: 5712 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1280x720 [SAR 1:1 DAR 16:9], 5710 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n    Metadata:\n      handler_name    : VideoHandler\n      vendor_id       : [0][0][0][0]",
+      "exiftool_output": "ExifTool Version Number         : 12.76\nFile Name                       : UCD-FIL-005_video.mp4\nDirectory                       : /mnt/nas/deid-sarin\nFile Size                       : 5.1 GB\nFile Modification Date/Time     : 2026:04:14 13:55:22-07:00\nFile Type                       : MP4\nMIME Type                       : video/mp4\nMajor Brand                     : ISO Base Media file (ISOM) v2\nMinor Version                   : 512\nCompatible Brands               : isom, iso2, avc1, mp41\nMedia Duration                  : 2:05:22\nImage Width                     : 1280\nImage Height                    : 720\nAvg Bitrate                     : 5.71 Mbps\nVideo Frame Rate                : 30\nTrack Duration                  : 2:05:22.13",
+      "ffmpeg_stderr": "ffmpeg version 6.1.1 Copyright (c) 2000-2024 the FFmpeg developers\nInput #0, mov,mp4,m4v,m3u8, from '/mnt/nas/raw-sarin/UCD-FIL-005_raw.mp4':\n  Duration: 02:05:22.13, start: 0.000000, bitrate: 9234 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1920x1080, 8545 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 128 kb/s (default)\nStream mapping:\n  Stream #0:0 -> #0:0 (h264 (native) -> h264 (libx264))\nOutput #0, mp4, to '/mnt/nas/deid-sarin/UCD-FIL-005_video.mp4':\n  Stream #0:0(und): Video: h264 (avc1 / 0x31637661), yuv420p(progressive), 1920x1080, q=2-31, 8545 kb/s, 30 fps, 15360 tbn (default)\n[h264 @ 0x55a3c2f1e800] Resolution changed from 1920x1080 to 1280x720 at frame 145000 — stream parameters inconsistent\nframe=225664 fps=128 q=-1.0 Lsize= 5242880kB time=02:05:22.13 bitrate=5712.3kbits/s speed=4.27x\nvideo:5242644kB audio:0kB subtitle:0kB other streams:0kB global headers:0kB muxing overhead: 0.004505%"
+    },
+    "expected_verdict": "fail",
+    "expected_category": "resolution_drift"
+  },
+  {
+    "case_id": "D07",
+    "role": "diagnostician",
+    "input": {
+      "ffprobe_output": "ffprobe version 6.1.1 Copyright (c) 2007-2024 the FFmpeg developers\nInput #0, mov,mp4,m4v,m3u8, from '/mnt/nas/deid-miller/UCD-FIL-019_video.mp4':\n  Metadata:\n    major_brand     : isom\n    minor_version   : 512\n    compatible_brands: isomiso2avc1mp41\n    encoder         : Lavf60.16.100\n  Duration: 00:00:00.00, start: 0.000000, bitrate: N/A",
+      "exiftool_output": "ExifTool Version Number         : 12.76\nFile Name                       : UCD-FIL-019_video.mp4\nDirectory                       : /mnt/nas/deid-miller\nFile Size                       : 1024 bytes\nFile Modification Date/Time     : 2026:04:11 10:04:33-07:00\nFile Type                       : MP4\nMIME Type                       : video/mp4\nMajor Brand                     : ISO Base Media file (ISOM) v2\nMinor Version                   : 512\nCompatible Brands               : isom, iso2, avc1, mp41\nMedia Duration                  : 0.00 s\nWarning                         : No streams found",
+      "ffmpeg_stderr": "ffmpeg version 6.1.1 Copyright (c) 2000-2024 the FFmpeg developers\nInput #0, mov,mp4,m4v,m3u8, from '/mnt/nas/raw-miller/UCD-FIL-019_raw.mp4':\n  Duration: 01:32:18.67, start: 0.000000, bitrate: 9234 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1920x1080, 8545 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 128 kb/s (default)\nStream mapping:\n  Stream #0:0 -> #0:0 (h264 (native) -> h264 (libx264))\nOutput #0, mp4, to '/mnt/nas/deid-miller/UCD-FIL-019_video.mp4':\n  Stream #0:0(und): Video: h264 (avc1 / 0x31637661), yuv420p(progressive), 1920x1080, q=2-31, 8545 kb/s, 30 fps, 15360 tbn (default)\nframe=    0 fps=0.0 q=0.0 size=       0kB time=00:00:00.00 bitrate=N/A speed=N/A\nframe=    0 fps=0.0 q=0.0 Lsize=       1kB time=00:00:00.00 bitrate=N/A speed=N/A\nvideo:0kB audio:0kB subtitle:0kB other streams:0kB global headers:0kB muxing overhead: 100.000000%"
+    },
+    "expected_verdict": "fail",
+    "expected_category": "empty_output"
+  },
+  {
+    "case_id": "D08",
+    "role": "diagnostician",
+    "input": {
+      "ffprobe_output": "ffprobe version 6.1.1 Copyright (c) 2007-2024 the FFmpeg developers\nInput #0, mov,mp4,m4v,m3u8, from '/mnt/nas/deid-noren/UCD-FIL-033_video.mp4':\n  Metadata:\n    major_brand     : isom\n    minor_version   : 512\n    compatible_brands: isomiso2avc1mp41\n    encoder         : Lavf60.16.100\n  Duration: 00:10:14.27, start: 0.000000, bitrate: 8412 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1920x1080 [SAR 1:1 DAR 16:9], 8410 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n    Metadata:\n      handler_name    : VideoHandler\n      vendor_id       : [0][0][0][0]",
+      "exiftool_output": "ExifTool Version Number         : 12.76\nFile Name                       : UCD-FIL-033_video.mp4\nDirectory                       : /mnt/nas/deid-noren\nFile Size                       : 631 MB\nFile Modification Date/Time     : 2026:04:09 15:22:41-07:00\nFile Type                       : MP4\nMIME Type                       : video/mp4\nMajor Brand                     : ISO Base Media file (ISOM) v2\nMinor Version                   : 512\nCompatible Brands               : isom, iso2, avc1, mp41\nMedia Duration                  : 0:10:14\nImage Width                     : 1920\nImage Height                    : 1080\nAvg Bitrate                     : 8.41 Mbps\nVideo Frame Rate                : 30\nTrack Duration                  : 0:10:14.27\nVideo Frame Count               : 18428",
+      "ffmpeg_stderr": "ffmpeg version 6.1.1 Copyright (c) 2000-2024 the FFmpeg developers\nInput #0, mov,mp4,m4v,m3u8, from '/mnt/nas/raw-noren/UCD-FIL-033_raw.mp4':\n  Duration: 02:21:12.47, start: 0.000000, bitrate: 9234 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1920x1080, 8545 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 128 kb/s (default)\nStream mapping:\n  Stream #0:0 -> #0:0 (h264 (native) -> h264 (libx264))\nOutput #0, mp4, to '/mnt/nas/deid-noren/UCD-FIL-033_video.mp4':\n  Stream #0:0(und): Video: h264 (avc1 / 0x31637661), yuv420p(progressive), 1920x1080, q=2-31, 8545 kb/s, 30 fps, 15360 tbn (default)\nframe= 18428 fps=145 q=-1.0 Lsize=  646234kB time=00:10:14.27 bitrate=8612.1kbits/s speed=4.83x\nvideo:646012kB audio:0kB subtitle:0kB other streams:0kB global headers:0kB muxing overhead: 0.034356%\nManifest-recorded concat duration: 02:21:12"
+    },
+    "expected_verdict": "fail",
+    "expected_category": "duration_mismatch"
+  },
+  {
+    "case_id": "D09",
+    "role": "diagnostician",
+    "input": {
+      "ffprobe_output": "ffprobe version 6.1.1 Copyright (c) 2007-2024 the FFmpeg developers\nInput #0, mov,mp4,m4v,m3u8, from '/mnt/nas/deid-flynn/UCD-FIL-038_video.mp4':\n  Metadata:\n    major_brand     : isom\n    minor_version   : 512\n    compatible_brands: isomiso2avc1mp41\n    encoder         : Lavf60.16.100\n  Duration: 01:44:56.00, start: 0.000000, bitrate: 8234 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1920x1080 [SAR 1:1 DAR 16:9], 8232 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n    Metadata:\n      handler_name    : VideoHandler\n      vendor_id       : [0][0][0][0]\n    Side data:\n      displaymatrix: rotation of 0.00 degrees\n  avg_frame_rate=0/0",
+      "exiftool_output": "ExifTool Version Number         : 12.76\nFile Name                       : UCD-FIL-038_video.mp4\nDirectory                       : /mnt/nas/deid-flynn\nFile Size                       : 6.2 GB\nFile Modification Date/Time     : 2026:04:07 12:38:19-07:00\nFile Type                       : MP4\nMIME Type                       : video/mp4\nMajor Brand                     : ISO Base Media file (ISOM) v2\nMinor Version                   : 512\nCompatible Brands               : isom, iso2, avc1, mp41\nMedia Duration                  : 1:44:56\nImage Width                     : 1920\nImage Height                    : 1080\nAvg Bitrate                     : 8.23 Mbps\nVideo Frame Rate                : 30\nTrack Duration                  : 1:44:56.00\nWarning                         : Variable frame rate detected (avg_frame_rate=0/0)",
+      "ffmpeg_stderr": "ffmpeg version 6.1.1 Copyright (c) 2000-2024 the FFmpeg developers\nInput #0, mov,mp4,m4v,m3u8, from '/mnt/nas/raw-flynn/UCD-FIL-038_raw.mp4':\n  Duration: 01:44:56.00, start: 0.000000, bitrate: 9456 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1920x1080, 8232 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 128 kb/s (default)\nStream mapping:\n  Stream #0:0 -> #0:0 (h264 (native) -> h264 (libx264))\nOutput #0, mp4, to '/mnt/nas/deid-flynn/UCD-FIL-038_video.mp4':\n  Stream #0:0(und): Video: h264 (avc1 / 0x31637661), yuv420p(progressive), 1920x1080, q=2-31, 8232 kb/s, 30 fps, 15360 tbn (default)\n[mp4 @ 0x55a3c2f1e800] discarding duplicate frame timestamps at pts 188160\n[mp4 @ 0x55a3c2f1e800] discarding duplicate frame timestamps at pts 282240\n[mp4 @ 0x55a3c2f1e800] discarding duplicate frame timestamps at pts 376320\nframe=188960 fps=121 q=-1.0 Lsize= 6389760kB time=01:44:56.00 bitrate=8234.1kbits/s speed=4.03x\nvideo:6389524kB audio:0kB subtitle:0kB other streams:0kB global headers:0kB muxing overhead: 0.003694%"
+    },
+    "expected_verdict": "fail",
+    "expected_category": "framerate_drift"
+  },
+  {
+    "case_id": "D10",
+    "role": "diagnostician",
+    "input": {
+      "ffprobe_output": "ffprobe version 6.1.1 Copyright (c) 2007-2024 the FFmpeg developers\n/mnt/nas/deid-kucejko/UCD-FIL-045_video.mp4: could not find codec parameters for stream 0 (Video: none, none): unspecified size\nConsider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options\nInput #0, mov,mp4,m4v,m3u8, from '/mnt/nas/deid-kucejko/UCD-FIL-045_video.mp4':\n  Duration: 00:00:00.00, bitrate: N/A",
+      "exiftool_output": "ExifTool Version Number         : 12.76\nFile Name                       : UCD-FIL-045_video.mp4\nDirectory                       : /mnt/nas/deid-kucejko\nFile Size                       : 0 bytes\nFile Modification Date/Time     : 2026:04:05 09:12:44-07:00\nFile Type                       : unknown\nError                           : File is empty",
+      "ffmpeg_stderr": "ffmpeg version 6.1.1 Copyright (c) 2000-2024 the FFmpeg developers\nInput #0, mov,mp4,m4v,m3u8, from '/mnt/nas/raw-kucejko/UCD-FIL-045_raw.mp4':\n  Duration: 01:18:42.33, start: 0.000000, bitrate: 9234 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1920x1080, 8545 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 128 kb/s (default)\nStream mapping:\n  Stream #0:0 -> #0:0 (h264 (native) -> h264 (libx264))\nOutput #0, mp4, to '/mnt/nas/deid-kucejko/UCD-FIL-045_video.mp4':\n  Stream #0:0(und): Video: h264 (avc1 / 0x31637661), yuv420p(progressive), 1920x1080, q=2-31, 8545 kb/s, 30 fps, 15360 tbn (default)\nframe=    0 fps=0.0 q=0.0 Lsize=       0kB time=00:00:00.00 bitrate=N/A speed=N/A\nvideo:0kB audio:0kB subtitle:0kB other streams:0kB global headers:0kB muxing overhead: unknown"
+    },
+    "expected_verdict": "fail",
+    "expected_category": "empty_output"
+  },
+  {
+    "case_id": "S01",
+    "role": "surgeon",
+    "input": "Just finished a robotic LAR for rectal cancer in OR 12. Today is April 16.",
+    "surgeon_username": "sarin",
+    "expected_clarification": false,
+    "expected_fields": {
+      "procedure_name": "Low anterior resection",
+      "approach": "Robotic",
+      "indication": "Colorectal cancer",
+      "or_room": "OR 12",
+      "case_date": "2026-04-16"
+    }
+  },
+  {
+    "case_id": "S02",
+    "role": "surgeon",
+    "input": "Did an open Hartmann reversal today in OR 8. Patient had recurrent diverticulitis with prior Hartmann six months ago.",
+    "surgeon_username": "sarin",
+    "expected_clarification": false,
+    "expected_fields": {
+      "procedure_name": "Hartmann reversal",
+      "approach": "Open",
+      "indication": "Diverticulitis",
+      "or_room": "OR 8"
+    }
+  },
+  {
+    "case_id": "S03",
+    "role": "surgeon",
+    "input": "Had a rough one today. Airway issues at induction, nearly canceled. Eventually got in and did a lap sigmoid for diverticulitis, OR 4.",
+    "surgeon_username": "sarin",
+    "expected_clarification": false,
+    "expected_fields": {
+      "procedure_name": "Sigmoidectomy",
+      "approach": "Laparoscopic",
+      "indication": "Diverticulitis",
+      "or_room": "OR 4"
+    }
+  },
+  {
+    "case_id": "S04",
+    "role": "surgeon",
+    "input": "Scope in OR 12.",
+    "surgeon_username": "sarin",
+    "expected_clarification": true,
+    "expected_fields": {
+      "or_room": "OR 12"
+    }
+  },
+  {
+    "case_id": "S05",
+    "role": "surgeon",
+    "input": "Did a TaTME for low rectal cancer, OR 7, robotic-assisted.",
+    "surgeon_username": "sarin",
+    "expected_clarification": false,
+    "expected_fields": {
+      "procedure_name": "Other",
+      "approach": "Robotic",
+      "indication": "Colorectal cancer",
+      "or_room": "OR 7"
+    }
+  },
+  {
+    "case_id": "S06",
+    "role": "surgeon",
+    "input": "Robotic LAR plus diverting loop ileostomy for rectal cancer, OR 12.",
+    "surgeon_username": "sarin",
+    "expected_clarification": false,
+    "expected_fields": {
+      "procedure_name": "Low anterior resection",
+      "approach": "Robotic",
+      "indication": "Colorectal cancer",
+      "or_room": "OR 12"
+    }
+  },
+  {
+    "case_id": "S07",
+    "role": "surgeon",
+    "input": "Robotic right hemi for cancer today. I can't remember the room — it was the one next to the Aesculap room.",
+    "surgeon_username": "sarin",
+    "expected_clarification": true,
+    "expected_fields": {
+      "procedure_name": "Right hemicolectomy",
+      "approach": "Robotic",
+      "indication": "Colorectal cancer"
+    }
+  },
+  {
+    "case_id": "S08",
+    "role": "surgeon",
+    "input": "TPC with IPAA today for UC, OR 9.",
+    "surgeon_username": "sarin",
+    "expected_clarification": false,
+    "expected_fields": {
+      "procedure_name": "Total proctocolectomy with IPAA",
+      "approach": null,
+      "indication": "Ulcerative colitis",
+      "or_room": "OR 9"
+    }
+  },
+  {
+    "case_id": "S09",
+    "role": "surgeon",
+    "input": "The one I did yesterday, you know which one.",
+    "surgeon_username": "sarin",
+    "expected_clarification": true,
+    "expected_fields": {}
+  },
+  {
+    "case_id": "S10",
+    "role": "surgeon",
+    "input": "Obstructing sigmoid cancer, lap Hartmann in OR 4 this morning.",
+    "surgeon_username": "sarin",
+    "expected_clarification": false,
+    "expected_fields": {
+      "procedure_name": "Hartmann procedure",
+      "approach": "Laparoscopic",
+      "indication": "Colorectal cancer",
+      "or_room": "OR 4"
+    }
+  }
+]

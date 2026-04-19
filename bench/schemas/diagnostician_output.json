@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["verdict", "issues", "remediation"],
+  "properties": {
+    "verdict": {"type": "string", "enum": ["pass", "fail"]},
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["category", "severity", "detail"],
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": [
+              "audio_leak", "metadata_leak", "codec_error",
+              "format_error", "empty_output", "duration_mismatch",
+              "resolution_drift", "framerate_drift", "file_corruption",
+              "none", "other"
+            ]
+          },
+          "severity": {"type": "string", "enum": ["critical", "warning", "info"]},
+          "detail": {"type": "string"}
+        }
+      }
+    },
+    "remediation": {"type": "string"}
+  }
+}

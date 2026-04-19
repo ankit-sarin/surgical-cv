@@ -1,7 +1,9 @@
 venv/
+.venv/
 __pycache__/
 .env
 *.db
+*.sqlite
 chroma_db/
 data/
 *.pyc
@@ -10,3 +12,6 @@ dist/
 build/
 .pytest_cache/
 primer.md
+bench/pull.pid
+bench/pull_log.txt
+bench/results/run_*.txt
