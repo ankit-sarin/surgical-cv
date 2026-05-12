@@ -54,7 +54,9 @@ Raw video is never copied into this repo. NAS paths are referenced, not duplicat
 
 Video arrives from the STERIS/BDV recording system as multiple ~2GB segments
 per case (naming convention: `capt0_YYYYMMDD-HHMMSS.mp4`). Multi-segment input
-is the standard, not an edge case. Processing uses two global Claude Code skills.
+is the standard, not an edge case. Processing is orchestrated by the in-repo
+`pipeline` CLI (see "Pipeline CLI" section below). State for every case is
+tracked in two CSVs under `/mnt/nas/or-raw/` plus a JSONL audit log.
 
 ### Study Code Convention
 Format: `UCD-FIL-###` (assigned in REDCap). The MRN ↔ study code mapping exists
@@ -62,24 +64,25 @@ only in REDCap. Study codes never appear in code, configs, or logs alongside
 identifiable information.
 
 ### Pass 1: Concat segments → PHI master
-- **Input:** BDV segments in `/mnt/nas/raw-[surgeon]/`
-- **Tool:** `/video-concat`
-- **Output:** `/mnt/nas/raw-[surgeon]/UCD-FIL-###_raw.mp4`
-- **Verify:** Output duration ≈ sum of segment durations
-- **Cleanup:** Delete original segments after concat verification (user-confirmed)
+- **Input:** BDV segments in `/mnt/nas/raw-[surgeon]/`, listed in `pipeline_state.csv` at `stage=intake`.
+- **Tool:** `python -m pipeline concat --surgeon <name>` (batch over all intake rows for that surgeon).
+- **Output:** `/mnt/nas/or-raw/<surgeon>_<YYYYMMDD-HHMMSS>.mp4`, where the timestamp is the first segment's BDV timestamp. Atomic via `<name>.partial.mp4` rename.
+- **Verify:** Output duration ≈ sum of segment durations; size ≈ sum of source segment sizes (stream-copy concat).
+- **Cleanup:** Source segments renamed to `capt0_YYYYMMDD-HHMMSS-copied.mp4` (best-effort; case is already committed before this step).
 
 ### Pass 2: De-identify PHI master → research copy
-- **Input:** `/mnt/nas/raw-[surgeon]/UCD-FIL-###_raw.mp4`
-- **Tool:** `/video-deidentify`
-- **Output:** `/mnt/nas/deid-[surgeon]/UCD-FIL-###_video.mp4`
-- **Verify:** ffprobe (no audio), exiftool (no metadata), visual spot-check
-- **Cleanup:** PHI master retention policy TBD
+- **Input:** `/mnt/nas/or-raw/<surgeon>_<YYYYMMDD-HHMMSS>.mp4`, listed in `pipeline_state.csv` at `stage=concatenated` with the filename in `concat_filename`.
+- **Tool:** `python -m pipeline deid --surgeon <name> [--case UCD-FIL-###]`. Batch mode advances every `concatenated` row for that surgeon; `--case` advances exactly one.
+- **Output:** `/mnt/nas/deid-[surgeon]/UCD-FIL-###_video.mp4`. Opaque filename — no date or surgeon name leaks. Atomic via `.partial.mp4` rename.
+- **FFmpeg flags:** `-an -map_metadata -1 -c:v libx264 -crf 18 -movflags +faststart`. Strips audio, clears container-level metadata, re-encodes video at visually-lossless quality (CRF 18 typically produces 1.15–1.50× the source size on motion-rich surgical content — expected, not a bug).
+- **Verify:** ffprobe (zero audio streams, single video stream, no PHI-bearing format tags); cross-family LLM verifier covered by Step 12's `verify` subcommand (not yet wired).
+- **Cleanup:** PHI master retention policy TBD.
 
 ### File Naming Convention
 | Pattern | Usage |
 |---------|-------|
-| `UCD-FIL-###_raw.mp4` | PHI master (concat, pre-deid) in raw-[surgeon] |
-| `UCD-FIL-###_video.mp4` | De-identified full video in deid-[surgeon] |
+| `<surgeon>_<YYYYMMDD-HHMMSS>.mp4` | PHI master (concat output) in `/mnt/nas/or-raw/`. Timestamp is the first segment's BDV timestamp. |
+| `UCD-FIL-###_video.mp4` | De-identified full video in `deid-[surgeon]/`. Opaque — no date/surgeon leak. |
 | `UCD-FIL-###_phase-NN_description.mp4` | Phase clip from de-identified video |
 | `UCD-FIL-###_edited-full.mp4` | Concatenated teaching edit |
 | `UCD-FIL-###_opnote.txt` | De-identified operative note |
@@ -104,20 +107,23 @@ This is a manual copy step, not part of the automated pipeline.
 surgical-cv/
 ├── CLAUDE.md              # Static architecture (this file)
 ├── primer.md              # Working state (maintained by Claude Code)
+├── README.md              # Pipeline CLI quick reference
 ├── requirements.txt
-├── pyproject.toml         # pytest config
-├── src/
-│   ├── deid/              # FFmpeg de-identification pipeline (raw → deid)
-│   ├── data/              # Dataset loaders, video readers, frame samplers
-│   ├── models/            # Model definitions (phase recognition, detection)
-│   ├── training/          # Training loops, loss functions, schedulers
-│   ├── evaluation/        # Metrics, visualization, benchmark runners
-│   └── utils/             # FFmpeg wrappers, annotation converters, misc
-├── configs/               # Experiment configs (YAML)
-├── notebooks/             # Exploratory analysis, visualization
-├── scripts/               # Data prep, training launchers, eval scripts
-├── tests/                 # Unit and integration tests
-└── data/                  # gitignored — local caches, extracted frames, annotations
+├── pipeline/              # CLI: concat, deid, status (verify/metadata stubs)
+│   ├── __main__.py
+│   ├── cli.py             # argparse + dispatch
+│   ├── schemas.py         # Pydantic v2 row models + stage machine
+│   ├── csv_io.py          # locked atomic CSV I/O
+│   ├── audit.py           # JSONL audit logger
+│   ├── paths.py           # NAS path resolution
+│   ├── ffmpeg.py          # ffmpeg_concat, ffmpeg_deid, ffprobe helpers
+│   └── commands/          # one module per subcommand
+├── tests/                 # 161 tests covering all of the above
+├── bench/                 # model benchmark harness (pre-existing)
+├── scripts/               # Throwaway scripts (e.g. seed_intake.py — gitignored)
+├── configs/               # Experiment configs (YAML) — placeholder
+├── notebooks/             # Exploratory analysis — placeholder
+└── data/                  # gitignored — local caches, extracted frames
 ```
 
 ## Scope
@@ -142,7 +148,7 @@ surgical-cv/
 - Frame extraction is a preprocessing step, cached in data/ (gitignored)
 - Public dataset loaders should handle Cholec80/CholecT50 directory conventions
 - Cross-family model verification for any LLM-assisted annotation
-- De-identification pipeline: concat in raw-[surgeon] (read-write), then de-identify to deid-[surgeon] (read-write). Uses /video-concat and /video-deidentify global skills.
+- De-identification pipeline: concat from raw-[surgeon] to or-raw, then de-identify to deid-[surgeon]. Orchestrated by the in-repo `pipeline` CLI; state in `or-raw/{case_manifest,pipeline_state}.csv` + `pipeline.log`.
 
 ## Running
 ```bash
@@ -153,9 +159,11 @@ source venv/bin/activate
 python -m pytest tests/ -v
 python -m pytest tests/ -v -m "not slow"    # skip long-running tests
 
-# De-identification — use Claude Code with global skills:
-# "Concat the segments in raw-miller and de-identify to deid-miller as UCD-FIL-002"
-# This triggers /video-concat (pass 1) then /video-deidentify (pass 2)
+# De-identification pipeline
+python -m pipeline status                            # joined view of all cases
+python -m pipeline concat --surgeon sarin            # batch concat intake → concatenated
+python -m pipeline deid   --surgeon sarin            # batch deid concatenated → deidentified
+python -m pipeline deid   --surgeon sarin --case UCD-FIL-001  # single-case deid
 
 # Frame extraction (example)
 python scripts/extract_frames.py --config configs/cholec80_frames.yaml
