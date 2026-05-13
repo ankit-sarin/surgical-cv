@@ -22,8 +22,9 @@ def build_parser():
     p_deid.add_argument("--case", default=None, help="Process only this case (UCD-FIL-###). Optional; defaults to batch mode.")
     p_deid.set_defaults(handler=deid.handle)
 
-    p_verify = subparsers.add_parser("verify", help="Verify a de-identified video.")
-    p_verify.add_argument("deid_file", help="Path to the de-identified video.")
+    p_verify = subparsers.add_parser("verify", help="Verify de-identified cases for a surgeon.")
+    p_verify.add_argument("--surgeon", required=True, help="Surgeon folder name (e.g. sarin, miller).")
+    p_verify.add_argument("--case", default=None, help="Process only this case (UCD-FIL-###). Optional; defaults to batch mode.")
     p_verify.set_defaults(handler=verify.handle)
 
     p_status = subparsers.add_parser("status", help="Show pipeline state.")

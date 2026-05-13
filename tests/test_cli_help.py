@@ -65,16 +65,26 @@ def test_deid_missing_surgeon_errors():
     assert "--surgeon" in result.stderr
 
 
-def test_verify_stub_invocation():
-    result = run("verify", "/deid/path.mp4")
+def test_verify_help_documents_surgeon_and_case_flags():
+    result = run("verify", "--help")
     assert result.returncode == 0
-    assert "Not yet implemented: verify" in result.stdout
-    assert "deid_file=/deid/path.mp4" in result.stdout
+    assert "--surgeon" in result.stdout
+    assert "--case" in result.stdout
 
 
-def test_verify_missing_positional_errors():
+def test_verify_no_eligible_cases(tmp_path):
+    nas = tmp_path / "nas"
+    (nas / "or-raw").mkdir(parents=True)
+    env = {**os.environ, "PIPELINE_NAS_ROOT": str(nas)}
+    result = run("verify", "--surgeon", "sarin", env=env)
+    assert result.returncode == 0
+    assert "No eligible cases for surgeon=sarin" in result.stdout
+
+
+def test_verify_missing_surgeon_errors():
     result = run("verify")
     assert result.returncode != 0
+    assert "--surgeon" in result.stderr
 
 
 def test_status_help_lists_flags():
