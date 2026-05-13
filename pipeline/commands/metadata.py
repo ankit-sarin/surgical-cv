@@ -121,6 +121,12 @@ def _validate_field(field: str, value: str) -> str | None:
     if field == "case_year":
         if not _YEAR_RE.match(value):
             return f"expected 4-digit year, got {value!r}"
+        vocab = _load_vocab("case_years")
+        if value not in vocab:
+            return (
+                f"year {value!r} not in case_years allowlist "
+                f"({len(vocab)} allowed: {vocab[0]}-{vocab[-1]})"
+            )
         return None
     if field == "or_room":
         if value.strip() == "":

@@ -134,6 +134,7 @@ def _seed_vocab(
     procedures: list[str] | str | None = None,
     approaches: list[str] | str | None = None,
     indications: list[str] | str | None = None,
+    case_years: list[str] | str | None = None,
 ) -> Path:
     """Write a partial or complete vocab set into a tmp directory.
 
@@ -146,6 +147,7 @@ def _seed_vocab(
         ("procedures", procedures),
         ("approaches", approaches),
         ("indications", indications),
+        ("case_years", case_years),
     ):
         if payload is None:
             continue
@@ -164,6 +166,7 @@ _DEFAULT_PROCEDURES = [
 ]
 _DEFAULT_APPROACHES = ["Open", "Laparoscopic", "Robotic", "Hybrid"]
 _DEFAULT_INDICATIONS = ["Colorectal cancer", "Diverticulitis", "Other"]
+_DEFAULT_CASE_YEARS = ["2025", "2026", "2027"]
 
 
 def _seed_full_vocab(vocab_dir: Path) -> Path:
@@ -172,6 +175,7 @@ def _seed_full_vocab(vocab_dir: Path) -> Path:
         procedures=_DEFAULT_PROCEDURES,
         approaches=_DEFAULT_APPROACHES,
         indications=_DEFAULT_INDICATIONS,
+        case_years=_DEFAULT_CASE_YEARS,
     )
 
 
@@ -989,3 +993,150 @@ def test_commit_exactly_one_audit_entry_per_invocation(tmp_path):
     assert entries[0]["outcome"] == "success"
     assert entries[1]["outcome"] == "failure"
     assert entries[1]["details"]["failure_kind"] == "validation"
+
+
+# ----- case_years allowlist tests -----
+
+
+@pytest.mark.parametrize(
+    "year,valid",
+    [
+        ("2014", False),  # just below lower bound
+        ("2015", True),   # lower bound, valid
+        ("2030", True),   # upper bound, valid
+        ("2031", False),  # just above upper bound
+    ],
+)
+def test_dry_run_case_year_boundary(tmp_path, year, valid):
+    paths, vocab_dir, before = _setup_dry_run(tmp_path)
+    # Seed the full real allowlist range (2015..2030) so boundaries match prod.
+    _seed_vocab(
+        vocab_dir,
+        case_years=[str(y) for y in range(2015, 2031)],
+    )
+    result = run(
+        "metadata",
+        "UCD-FIL-001",
+        "--edit",
+        "case_year",
+        year,
+        env=_env(paths, vocab_dir),
+    )
+    if valid:
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert "DRY RUN" in result.stdout
+        assert year in result.stdout
+    else:
+        assert result.returncode == 1
+        err = result.stderr
+        assert "validation error" in err
+        assert "case_year" in err
+        assert "not in case_years allowlist" in err
+        assert year in err
+    _assert_no_mutation(paths, before)
+
+
+def test_dry_run_format_failure_vs_allowlist_failure_distinct_messages(tmp_path):
+    paths, vocab_dir, before = _setup_dry_run(tmp_path)
+    _seed_vocab(vocab_dir, case_years=[str(y) for y in range(2015, 2031)])
+
+    # "20XX" fails the regex first — message mentions "4-digit year".
+    bad_format = run(
+        "metadata", "UCD-FIL-001", "--edit", "case_year", "20XX",
+        env=_env(paths, vocab_dir),
+    )
+    assert bad_format.returncode == 1
+    assert "expected 4-digit year" in bad_format.stderr
+    assert "allowlist" not in bad_format.stderr
+
+    # "1999" passes the regex but fails the allowlist — distinct message.
+    bad_allowlist = run(
+        "metadata", "UCD-FIL-001", "--edit", "case_year", "1999",
+        env=_env(paths, vocab_dir),
+    )
+    assert bad_allowlist.returncode == 1
+    assert "not in case_years allowlist" in bad_allowlist.stderr
+    assert "4-digit year" not in bad_allowlist.stderr
+
+    _assert_no_mutation(paths, before)
+
+
+def test_commit_invalid_year_logs_validation_failure_kind(tmp_path):
+    paths, vocab_dir, before_csv = _setup_dry_run(tmp_path)
+    _seed_vocab(vocab_dir, case_years=[str(y) for y in range(2015, 2031)])
+
+    result = run(
+        "metadata", "UCD-FIL-001", "--edit", "case_year", "1999", "--confirm",
+        env=_env(paths, vocab_dir),
+    )
+    assert result.returncode == 1
+    assert "validation error" in result.stderr
+    assert "1999" in result.stderr
+    assert paths.manifest_csv.read_bytes() == before_csv
+
+    entries = _read_audit_entries(paths)
+    assert len(entries) == 1
+    e = entries[0]
+    assert e["outcome"] == "failure"
+    assert e["case"] == "UCD-FIL-001"
+    assert e["details"]["failure_kind"] == "validation"
+    assert e["details"]["field"] == "case_year"
+    assert e["details"]["value"] == "1999"
+    assert "allowlist" in e["details"]["reason"]
+
+
+def test_commit_case_years_missing_logs_infra_failure(tmp_path):
+    paths = _make_paths(tmp_path)
+    # Seed only 3 of 4 vocab files; case_years.json omitted.
+    vocab_dir = _seed_vocab(
+        tmp_path / "vocab",
+        procedures=_DEFAULT_PROCEDURES,
+        approaches=_DEFAULT_APPROACHES,
+        indications=_DEFAULT_INDICATIONS,
+        case_years=None,
+    )
+    _seed_manifest(paths, _manifest_row("UCD-FIL-001"))
+    before_csv = paths.manifest_csv.read_bytes()
+
+    result = run(
+        "metadata", "UCD-FIL-001", "--edit", "case_year", "2027", "--confirm",
+        env=_env(paths, vocab_dir),
+    )
+    assert result.returncode == 2
+    err = result.stderr
+    assert "infrastructure error" in err
+    assert "vocab file missing" in err
+    assert "case_years.json" in err
+    assert paths.manifest_csv.read_bytes() == before_csv
+
+    entries = _read_audit_entries(paths)
+    assert len(entries) == 1
+    e = entries[0]
+    assert e["outcome"] == "failure"
+    assert e["case"] == "UCD-FIL-001"
+    assert e["details"]["failure_kind"] == "infra"
+
+
+def test_dry_run_case_years_malformed_returns_2(tmp_path):
+    paths = _make_paths(tmp_path)
+    vocab_dir = _seed_vocab(
+        tmp_path / "vocab",
+        procedures=_DEFAULT_PROCEDURES,
+        approaches=_DEFAULT_APPROACHES,
+        indications=_DEFAULT_INDICATIONS,
+        case_years="{not valid json",
+    )
+    _seed_manifest(paths, _manifest_row("UCD-FIL-001"))
+    before_csv = paths.manifest_csv.read_bytes()
+
+    result = run(
+        "metadata", "UCD-FIL-001", "--edit", "case_year", "2027",
+        env=_env(paths, vocab_dir),
+    )
+    assert result.returncode == 2
+    assert "infrastructure error" in result.stderr
+    assert "malformed" in result.stderr
+    assert "case_years.json" in result.stderr
+    assert paths.manifest_csv.read_bytes() == before_csv
+    # Dry-run path — no audit entry.
+    assert not paths.audit_log.exists()

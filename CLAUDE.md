@@ -143,7 +143,7 @@ Picklist values for `procedure_name` / `approach` / `indication` are loaded from
 | procedures.json | 19 | Semantic clinical ordering, "Other" last. Includes TAMIS in the rectal-cancer cluster (LAR / APR / TAMIS). |
 | approaches.json | 4 | Open / Laparoscopic / Robotic / Hybrid |
 | indications.json | 11 | "Other" last |
-| case_years.json | — | Not provided. `case_year` is validated by regex `^\d{4}$` only (no allowlist). |
+| case_years.json | 16 | "2015"–"2030" inclusive (ascending). `case_year` is validated by regex `^\d{4}$` first, then allowlist membership. |
 
 ## Audit Log
 
