@@ -5,6 +5,31 @@ from pipeline.commands import concat, deid, verify, status, metadata
 
 STAGES = ["intake", "concatenated", "deidentified", "verified", "failed"]
 
+_EDITABLE_FIELDS = (
+    "case_year",
+    "or_room",
+    "procedure_name",
+    "approach",
+    "indication",
+    "notes",
+)
+
+
+class _MetadataEditAction(argparse.Action):
+    """Validates that the FIELD half of --edit FIELD VALUE is one of the
+    six editable fields. ucd_fil_id and surgeon are immutable via this CLI
+    and rejected here at parse time with a standard argparse error.
+    """
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        field, value = values
+        if field not in _EDITABLE_FIELDS:
+            parser.error(
+                f"argument --edit: FIELD must be one of "
+                f"{{{', '.join(_EDITABLE_FIELDS)}}}, got {field!r}"
+            )
+        setattr(namespace, self.dest, [field, value])
+
 
 def build_parser():
     parser = argparse.ArgumentParser(
@@ -37,9 +62,20 @@ def build_parser():
     p_metadata.add_argument("ucd_fil_id", help="Case id in UCD-FIL-### form.")
     group = p_metadata.add_mutually_exclusive_group()
     group.add_argument("--show", action="store_true", help="Show metadata (default).")
-    group.add_argument("--edit", nargs=2, metavar=("FIELD", "VALUE"), default=None, help="Edit a metadata field.")
+    group.add_argument(
+        "--edit",
+        nargs=2,
+        metavar=("FIELD", "VALUE"),
+        default=None,
+        action=_MetadataEditAction,
+        help=(
+            "Edit a metadata field. FIELD must be one of: "
+            + ", ".join(_EDITABLE_FIELDS)
+            + ". ucd_fil_id and surgeon are immutable via this CLI."
+        ),
+    )
     p_metadata.add_argument("--confirm", action="store_true", help="Confirm edit (required with --edit).")
-    p_metadata.set_defaults(handler=metadata.handle, _parser=p_metadata)
+    p_metadata.set_defaults(handler=metadata.run, _parser=p_metadata)
 
     return parser
 
@@ -53,3 +89,7 @@ def main(argv=None):
 
     rc = args.handler(args)
     sys.exit(rc if rc is not None else 0)
+
+
+if __name__ == "__main__":
+    main()

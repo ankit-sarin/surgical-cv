@@ -120,20 +120,26 @@ def test_status_invalid_stage_errors():
 
 
 def test_metadata_show_default():
+    # Sanity check against the real NAS — UCD-FIL-001 exists in the
+    # sarin manifest. Detailed --show coverage lives in
+    # test_cli_metadata.py with a hermetic tmp NAS.
     result = run("metadata", "UCD-FIL-001")
     assert result.returncode == 0
-    assert "Not yet implemented: metadata" in result.stdout
-    assert "ucd_fil_id=UCD-FIL-001" in result.stdout
+    assert "Case:" in result.stdout
+    assert "UCD-FIL-001" in result.stdout
 
 
-def test_metadata_edit_with_confirm():
-    result = run("metadata", "UCD-FIL-001", "--edit", "case_year", "2026", "--confirm")
+def test_metadata_edit_dry_run_integration():
+    # Real-NAS sanity check WITHOUT --confirm so the test suite never
+    # mutates real state or appends to /mnt/nas/or-raw/pipeline.log.
+    # Commit-path coverage lives in tests/test_cli_metadata.py with a
+    # hermetic tmp NAS.
+    result = run("metadata", "UCD-FIL-001", "--edit", "case_year", "2026")
     assert result.returncode == 0
     out = result.stdout
-    assert "ucd_fil_id=UCD-FIL-001" in out
-    assert "edit_field=case_year" in out
-    assert "edit_value=2026" in out
-    assert "confirm=True" in out
+    assert "DRY RUN" in out
+    assert "UCD-FIL-001" in out
+    assert "case_year" in out
 
 
 def test_metadata_confirm_without_edit_errors():
@@ -143,7 +149,7 @@ def test_metadata_confirm_without_edit_errors():
 
 
 def test_metadata_show_and_edit_are_mutually_exclusive():
-    result = run("metadata", "UCD-FIL-001", "--show", "--edit", "f", "v")
+    result = run("metadata", "UCD-FIL-001", "--show", "--edit", "notes", "v")
     assert result.returncode != 0
 
 
