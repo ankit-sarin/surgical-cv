@@ -1,12 +1,13 @@
 import csv
 import fcntl
 import os
-import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
 from pydantic import BaseModel, ValidationError
+
+from pipeline.atomic_write import write_atomic  # F-014: shared atomic-write idiom
 
 
 class CsvIoError(Exception):
@@ -147,26 +148,15 @@ class CsvTable:
                 os.close(lock_fd)
 
     def _commit(self, tx: Transaction) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            prefix=self.path.name + ".",
-            suffix=".tmp",
-            dir=str(self.path.parent),
-        )
-        try:
-            with os.fdopen(tmp_fd, "w", newline="") as f:
-                writer = csv.DictWriter(
-                    f, fieldnames=list(self.columns), lineterminator="\n"
-                )
-                writer.writeheader()
-                for r in tx.read_all():
-                    writer.writerow(r.to_csv_dict())
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, str(self.path))
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except FileNotFoundError:
-                pass
-            raise
+        # F-014: tempfile + fsync + os.replace + cleanup-on-exception lives
+        # in pipeline.atomic_write; this method only specifies the row-
+        # serialization shape via the writer callback.
+        def _write_csv(f) -> None:
+            writer = csv.DictWriter(
+                f, fieldnames=list(self.columns), lineterminator="\n"
+            )
+            writer.writeheader()
+            for r in tx.read_all():
+                writer.writerow(r.to_csv_dict())
+
+        write_atomic(self.path, _write_csv)

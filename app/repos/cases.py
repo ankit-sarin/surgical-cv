@@ -28,12 +28,12 @@ import csv
 import json
 import logging
 import os
-import re
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Protocol
+
+from pipeline.atomic_write import write_atomic  # F-014: shared atomic-write idiom
 
 from app.repos.segments import raw_root
 
@@ -59,10 +59,10 @@ _MARKER_WRITE_GENERIC_MSG = (
     "Please contact your coordinator."
 )
 
+from pipeline.schemas import CASE_ID_RE  # F-016: shared case-id pattern
+
+
 _DEFAULT_MANIFEST_PATH = Path("/mnt/nas/or-raw/case_manifest.csv")
-
-
-_CASE_ID_PATTERN = re.compile(r"^UCD-FIL-(\d{3,})$")
 
 
 @dataclass(frozen=True)
@@ -91,12 +91,18 @@ class RepoIntegrityError(Exception):
 def _next_ucd_fil_id(existing_ids: Iterable[str]) -> str:
     """Allocate the next case ID as max-numeric-suffix + 1, zero-padded to
     three digits. Tolerates gaps (001/002/005 → 006). Non-matching ids
-    are ignored — they don't participate in the allocation."""
+    are ignored — they don't participate in the allocation.
+
+    F-016: format check uses the shared ``CASE_ID_RE``; the numeric suffix
+    is sliced off the prefix rather than via a parallel capturing pattern.
+    The pre-F-016 regex (``\\d{3,}``) was lenient enough to accept
+    ``UCD-FIL-1000``, which would have been rejected by the schema's
+    strict ``\\d{3}`` validators downstream — a latent bug fixed by the
+    consolidation."""
     max_n = 0
     for case_id in existing_ids:
-        m = _CASE_ID_PATTERN.match(case_id)
-        if m:
-            n = int(m.group(1))
+        if CASE_ID_RE.match(case_id):
+            n = int(case_id.removeprefix("UCD-FIL-"))
             if n > max_n:
                 max_n = n
     return f"UCD-FIL-{max_n + 1:03d}"
@@ -111,34 +117,20 @@ def _write_ready_marker(
 ) -> Path:
     """Drop a ``.ready-<ucd_fil_id>.json`` marker in the surgeon's raw-video
     folder. The dot-prefix hides it from BDV / Citrix browsing. Written via
-    temp-file + atomic rename so the future Q3 worker never observes a
-    half-written marker."""
-    raw_dir = raw_video_root / f"raw-{surgeon}"
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    marker_path = raw_dir / f".ready-{ucd_fil_id}.json"
+    ``pipeline.atomic_write.write_atomic`` (F-014) so the worker never
+    observes a half-written marker."""
+    marker_path = raw_video_root / f"raw-{surgeon}" / f".ready-{ucd_fil_id}.json"
     payload = {
         "ucd_fil_id": ucd_fil_id,
         "surgeon": surgeon,
         "submitted_at": submitted_at,
         "segments": list(segment_filenames),
     }
-    tmp_fd, tmp_path = tempfile.mkstemp(
-        prefix=f".ready-{ucd_fil_id}.",
-        suffix=".tmp",
-        dir=str(raw_dir),
-    )
-    try:
-        with os.fdopen(tmp_fd, "w") as f:
-            json.dump(payload, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, str(marker_path))
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except FileNotFoundError:
-            pass
-        raise
+
+    def _write_json(f) -> None:
+        json.dump(payload, f, indent=2)
+
+    write_atomic(marker_path, _write_json)
     return marker_path
 
 

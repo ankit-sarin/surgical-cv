@@ -18,17 +18,13 @@ exclude them from the surgeon's intake view.
 from __future__ import annotations
 
 import os
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
+from pipeline.bdv import BDV_UNCLAIMED_RE  # F-015: shared canonical pattern
 from pipeline.paths import nas_root as _nas_root
-
-
-# Canonical, *unclaimed* form only — no suffix between timestamp and .mp4.
-_BDV_CANONICAL_RE = re.compile(r"^capt0_(\d{8})-(\d{6})\.mp4$")
 
 
 def raw_root() -> Path:
@@ -51,7 +47,7 @@ class RawSegmentRepository(Protocol):
 
 
 def _parse_bdv_timestamp(filename: str) -> datetime | None:
-    m = _BDV_CANONICAL_RE.match(filename)
+    m = BDV_UNCLAIMED_RE.match(filename)
     if not m:
         return None
     date_str, time_str = m.groups()

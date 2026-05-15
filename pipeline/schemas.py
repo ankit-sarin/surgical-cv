@@ -1,9 +1,31 @@
 import json
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+# F-016: single source of truth for the UCD-FIL-### case-id pattern. Both
+# the schema validators (CaseManifestRow, PipelineStateRow) and every CLI /
+# repo / worker module that needed to recognize a case id used to redefine
+# this regex independently, with at least one drift (cases.py used \d{3,}
+# which would have allowed UCD-FIL-1000 — incompatible with the schema's
+# strict \d{3}). Tightened to \d{3} everywhere; the lenient form was a
+# latent bug, not a feature.
+CASE_ID_RE_STR: str = r"^UCD-FIL-\d{3}$"
+CASE_ID_RE: re.Pattern[str] = re.compile(CASE_ID_RE_STR)
+
+# F-017: surgeon folder-name pattern, replicated across concat / deid /
+# verify CLI handlers. Hoisted here so a future surgeon onboarding (e.g.,
+# a name with characters outside [a-z0-9-]) only needs one update.
+SURGEON_RE_STR: str = r"^[a-z][a-z0-9-]*$"
+SURGEON_RE: re.Pattern[str] = re.compile(SURGEON_RE_STR)
+
+# F-017: max length of the verification_notes column. Three identical
+# definitions across concat/deid/verify CLI commands; consolidated here.
+VERIFICATION_NOTES_MAX: int = 200
 
 
 CASE_MANIFEST_COLUMNS: tuple[str, ...] = (
@@ -58,7 +80,7 @@ def is_valid_transition(from_stage: Stage, to_stage: Stage) -> bool:
 
 
 class CaseManifestRow(BaseModel):
-    ucd_fil_id: str = Field(pattern=r"^UCD-FIL-\d{3}$")
+    ucd_fil_id: str = Field(pattern=CASE_ID_RE_STR)
     surgeon: str = Field(min_length=1)
     case_year: str = Field(pattern=r"^\d{4}$")
     or_room: str = Field(min_length=1)
@@ -127,7 +149,7 @@ class CaseManifestRow(BaseModel):
 
 
 class PipelineStateRow(BaseModel):
-    ucd_fil_id: str = Field(pattern=r"^UCD-FIL-\d{3}$")
+    ucd_fil_id: str = Field(pattern=CASE_ID_RE_STR)
     raw_segments: list[str] = Field(min_length=1)
     concat_filename: str = ""
     deid_filename: str = ""

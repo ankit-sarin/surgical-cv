@@ -1,5 +1,4 @@
 import os
-import re
 import sys
 from argparse import Namespace
 from datetime import datetime, timezone
@@ -9,24 +8,26 @@ from pipeline.csv_io import CsvTable
 from pipeline.ffmpeg import FFmpegError, ffmpeg_deid
 from pipeline.paths import NasPaths, resolve_paths
 from pipeline.schemas import (
+    CASE_ID_RE,
     CASE_MANIFEST_COLUMNS,
     PIPELINE_STATE_COLUMNS,
+    SURGEON_RE,
+    VERIFICATION_NOTES_MAX,
     CaseManifestRow,
     PipelineStateRow,
     Stage,
 )
 
 
-_SURGEON_RE = re.compile(r"^[a-z][a-z0-9-]*$")
-_CASE_RE = re.compile(r"^UCD-FIL-\d{3}$")
-_VERIFICATION_NOTES_MAX = 200
+# F-016 + F-017: case-id pattern, surgeon-name pattern, and verification-notes
+# truncation length all imported from pipeline.schemas (single source of truth).
 
 
 def handle(args: Namespace, paths: NasPaths | None = None) -> int:
     surgeon = args.surgeon
-    if not isinstance(surgeon, str) or not _SURGEON_RE.match(surgeon):
+    if not isinstance(surgeon, str) or not SURGEON_RE.match(surgeon):
         print(
-            f"error: invalid surgeon name {surgeon!r}: must match {_SURGEON_RE.pattern}",
+            f"error: invalid surgeon name {surgeon!r}: must match {SURGEON_RE.pattern}",
             file=sys.stderr,
         )
         return 2
@@ -52,7 +53,7 @@ def handle(args: Namespace, paths: NasPaths | None = None) -> int:
 
     with state_table.transaction() as tx:
         if target_case is not None:
-            if not _CASE_RE.match(target_case):
+            if not CASE_ID_RE.match(target_case):
                 print(
                     f"error: --case must match UCD-FIL-###, got {target_case!r}",
                     file=sys.stderr,
@@ -114,7 +115,7 @@ def handle(args: Namespace, paths: NasPaths | None = None) -> int:
                 output_basename = _process_case(row, paths, surgeon)
             except Exception as e:
                 full_error = str(e)
-                error_summary = full_error[:_VERIFICATION_NOTES_MAX]
+                error_summary = full_error[:VERIFICATION_NOTES_MAX]
                 tx.update(
                     case_id,
                     stage=Stage.failed,

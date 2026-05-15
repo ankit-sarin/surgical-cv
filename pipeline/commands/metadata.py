@@ -40,6 +40,7 @@ from pipeline.paths import NasPaths, resolve_paths
 from pipeline.phi_redact import redact_field
 from pipeline.picklists import PicklistError, load_picklist_values
 from pipeline.schemas import (
+    CASE_ID_RE,
     CASE_MANIFEST_COLUMNS,
     PIPELINE_STATE_COLUMNS,
     CaseManifestRow,
@@ -58,7 +59,7 @@ _NOTES_BLOCKED_MSG = (
 )
 
 
-_CASE_RE = re.compile(r"^UCD-FIL-\d{3}$")
+# F-016: case-id pattern imported from pipeline.schemas (single source).
 # Mirrors CaseManifestRow.case_year Field(pattern=r"^\d{4}$") in pipeline/schemas.py.
 _YEAR_RE = re.compile(r"^\d{4}$")
 
@@ -302,7 +303,7 @@ def _render_edit_block(
 
 def _dry_run(args: Namespace, paths: NasPaths | None) -> int:
     case_id = args.ucd_fil_id
-    if not _CASE_RE.match(case_id):
+    if not CASE_ID_RE.match(case_id):
         print(f"error: invalid case ID format: {case_id}", file=sys.stderr)
         return 1
 
@@ -358,7 +359,7 @@ def _commit(args: Namespace, paths: NasPaths | None) -> int:
 
     # Step 1 — format check (audit on failure, case= omitted because the arg
     # isn't a real case ID).
-    if not _CASE_RE.match(case_id):
+    if not CASE_ID_RE.match(case_id):
         log_audit(
             paths.audit_log,
             "metadata",
@@ -489,7 +490,7 @@ def _commit(args: Namespace, paths: NasPaths | None) -> int:
 
 def _show(args: Namespace, paths: NasPaths | None) -> int:
     case_id = args.ucd_fil_id
-    if not _CASE_RE.match(case_id):
+    if not CASE_ID_RE.match(case_id):
         print(f"error: invalid case ID format: {case_id}", file=sys.stderr)
         return 1
 

@@ -1,11 +1,9 @@
 import json
-import re
 import subprocess
 import tempfile
 from pathlib import Path
 
-
-_BDV_FILENAME_RE = re.compile(r"^capt0_(\d{8}-\d{6})(?:-copied)?\.mp4$")
+from pipeline.bdv import BDV_ANY_RE  # F-015: shared canonical + -copied form
 
 
 class FFmpegToolError(Exception):
@@ -106,7 +104,7 @@ def parse_bdv_timestamp(filename: str) -> str:
     writes after duplicating a segment, so callers reasoning about already-
     moved segments can still recover the original timestamp.
     """
-    m = _BDV_FILENAME_RE.match(filename)
+    m = BDV_ANY_RE.match(filename)
     if m is None:
         raise BdvFilenameError(filename)
     return m.group(1)

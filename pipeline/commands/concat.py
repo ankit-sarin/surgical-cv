@@ -1,5 +1,4 @@
 import os
-import re
 import sys
 from argparse import Namespace
 from datetime import datetime, timezone
@@ -16,21 +15,23 @@ from pipeline.paths import NasPaths, resolve_paths
 from pipeline.schemas import (
     CASE_MANIFEST_COLUMNS,
     PIPELINE_STATE_COLUMNS,
+    SURGEON_RE,
+    VERIFICATION_NOTES_MAX,
     CaseManifestRow,
     PipelineStateRow,
     Stage,
 )
 
 
-_SURGEON_RE = re.compile(r"^[a-z][a-z0-9-]*$")
-_VERIFICATION_NOTES_MAX = 200
+# F-017: surgeon-name pattern + verification-notes truncation imported from
+# pipeline.schemas (single source of truth across concat / deid / verify).
 
 
 def handle(args: Namespace, paths: NasPaths | None = None) -> int:
     surgeon = args.surgeon
-    if not isinstance(surgeon, str) or not _SURGEON_RE.match(surgeon):
+    if not isinstance(surgeon, str) or not SURGEON_RE.match(surgeon):
         print(
-            f"error: invalid surgeon name {surgeon!r}: must match {_SURGEON_RE.pattern}",
+            f"error: invalid surgeon name {surgeon!r}: must match {SURGEON_RE.pattern}",
             file=sys.stderr,
         )
         return 2
@@ -69,7 +70,7 @@ def handle(args: Namespace, paths: NasPaths | None = None) -> int:
                 output_basename = _process_case(row, paths, surgeon)
             except Exception as e:
                 full_error = str(e)
-                error_summary = full_error[:_VERIFICATION_NOTES_MAX]
+                error_summary = full_error[:VERIFICATION_NOTES_MAX]
                 tx.update(
                     case_id,
                     stage=Stage.failed,

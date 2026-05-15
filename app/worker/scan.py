@@ -23,8 +23,11 @@ from pathlib import Path
 from typing import Iterator
 
 
+# F-016: marker filename pattern embeds the strict ``\d{3}`` case-id form;
+# the prior ``\d{3,}`` was lenient and would have produced filenames the
+# downstream schema rejects (latent bug fixed by the F-016 consolidation).
 _RAW_DIR_RE = re.compile(r"^raw-([a-z][a-z0-9-]*)$")
-_MARKER_RE = re.compile(r"^\.ready-(UCD-FIL-\d{3,})\.json$")
+_MARKER_RE = re.compile(r"^\.ready-(UCD-FIL-\d{3})\.json$")
 
 
 @dataclass(frozen=True)
