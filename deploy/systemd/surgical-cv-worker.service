@@ -1,0 +1,31 @@
+[Unit]
+Description=Surgical-CV Q3 decoupled worker (single iteration)
+Documentation=https://github.com/ankit-sarin/surgical-cv
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# %h expands to the invoking user's $HOME when this is installed under
+# --user. For a system-scoped install, replace with absolute paths.
+WorkingDirectory=%h/projects/surgical-cv
+Environment=PYTHONUNBUFFERED=1
+# Per-host overrides (NAS root, picklist dir, etc.) belong in an EnvironmentFile=
+# drop-in so this unit file stays generic. Example drop-in:
+#   /etc/systemd/system/surgical-cv-worker.service.d/override.conf
+# with content:
+#   [Service]
+#   EnvironmentFile=/etc/surgical-cv/worker.env
+ExecStart=%h/projects/surgical-cv/.venv/bin/python -m app.worker --once
+
+# A single iteration normally completes well under 5 minutes. Cap at 30 to
+# tolerate a slow verify diagnostician + concurrent NAS load without
+# starving the timer.
+TimeoutStartSec=30min
+
+# Don't restart on failure — the timer will fire again. Restart=on-failure
+# would create a tight loop if the manifest is misconfigured.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

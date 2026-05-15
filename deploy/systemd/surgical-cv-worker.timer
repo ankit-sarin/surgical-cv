@@ -1,0 +1,21 @@
+[Unit]
+Description=Surgical-CV worker — fire one iteration every 5 minutes
+Documentation=https://github.com/ankit-sarin/surgical-cv
+
+[Timer]
+# Five-minute cadence. Worst-case latency from marker write to dispatch
+# matches the "10 minutes" promise in Section 5's success banner (5 min
+# wait + up to 5 min for the dispatch itself).
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=surgical-cv-worker.service
+
+# AccuracySec coarsens scheduling so multiple timers can coalesce — fine
+# for this workload, no need to fire on the millisecond.
+AccuracySec=30s
+
+# Persistent=true means missed fires (host was off) replay once on next boot.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
