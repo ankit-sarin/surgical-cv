@@ -128,43 +128,11 @@ def _env(
     picklist_dir: Path | None = None,
 ) -> dict:
     env = {**os.environ, "PIPELINE_NAS_ROOT": str(paths.root)}
-    if vocab_dir is not None:
-        env["PIPELINE_VOCAB_DIR"] = str(vocab_dir)
-        if picklist_dir is None:
-            picklist_dir = vocab_dir / "picklists"
+    if vocab_dir is not None and picklist_dir is None:
+        picklist_dir = vocab_dir / "picklists"
     if picklist_dir is not None:
         env["PIPELINE_PICKLIST_DIR"] = str(picklist_dir)
     return env
-
-
-def _seed_vocab(
-    vocab_dir: Path,
-    procedures: list[str] | str | None = None,
-    approaches: list[str] | str | None = None,
-    indications: list[str] | str | None = None,
-    case_years: list[str] | str | None = None,
-) -> Path:
-    """Write a partial or complete vocab set into a tmp directory.
-
-    Pass a list to write a valid JSON array. Pass a raw string to write
-    invalid content (used for the malformed-JSON test). Pass None to omit
-    that file entirely (used for the missing-file test).
-    """
-    vocab_dir.mkdir(parents=True, exist_ok=True)
-    for name, payload in (
-        ("procedures", procedures),
-        ("approaches", approaches),
-        ("indications", indications),
-        ("case_years", case_years),
-    ):
-        if payload is None:
-            continue
-        target = vocab_dir / f"{name}.json"
-        if isinstance(payload, list):
-            target.write_text(json.dumps(payload))
-        else:
-            target.write_text(payload)
-    return vocab_dir
 
 
 _DEFAULT_PROCEDURES = [
@@ -210,17 +178,7 @@ def _seed_picklist(
 
 
 def _seed_full_vocab(vocab_dir: Path) -> Path:
-    # _seed_vocab() writes legacy flat-list JSONs into vocab_dir; harmless
-    # dead writes after Spec D moved every field onto the picklist seed
-    # pattern. Kept so the three Spec A reframed picklist-failure tests
-    # still have a baseline vocab_dir to work from.
-    _seed_vocab(
-        vocab_dir,
-        procedures=_DEFAULT_PROCEDURES,
-        approaches=_DEFAULT_APPROACHES,
-        indications=_DEFAULT_INDICATIONS,
-        case_years=_DEFAULT_CASE_YEARS,
-    )
+    vocab_dir.mkdir(parents=True, exist_ok=True)
     pdir = vocab_dir / "picklists"
     _seed_picklist(pdir, "procedure", "colorectal", _DEFAULT_PROCEDURES)
     _seed_picklist(pdir, "approach", None, _DEFAULT_APPROACHES)
@@ -535,11 +493,7 @@ def test_dry_run_notes_accepts_empty_string(tmp_path):
 
 def test_dry_run_picklist_missing_returns_2(tmp_path):
     paths = _make_paths(tmp_path)
-    vocab_dir = _seed_vocab(
-        tmp_path / "vocab",
-        approaches=_DEFAULT_APPROACHES,
-        indications=_DEFAULT_INDICATIONS,
-    )
+    vocab_dir = tmp_path / "vocab"
     # PIPELINE_PICKLIST_DIR exists but procedure_colorectal.json omitted.
     _seed_picklist(vocab_dir / "picklists", "procedure", "colorectal", None)
     _seed_manifest(paths, _manifest_row("UCD-FIL-001"))
@@ -563,11 +517,7 @@ def test_dry_run_picklist_missing_returns_2(tmp_path):
 
 def test_dry_run_picklist_malformed_returns_2(tmp_path):
     paths = _make_paths(tmp_path)
-    vocab_dir = _seed_vocab(
-        tmp_path / "vocab",
-        approaches=_DEFAULT_APPROACHES,
-        indications=_DEFAULT_INDICATIONS,
-    )
+    vocab_dir = tmp_path / "vocab"
     _seed_picklist(
         vocab_dir / "picklists", "procedure", "colorectal", "{not valid json"
     )
@@ -826,11 +776,7 @@ def test_commit_bad_case_format_logs_format_failure(tmp_path):
 
 def test_commit_picklist_missing_logs_infra_failure(tmp_path):
     paths = _make_paths(tmp_path)
-    vocab_dir = _seed_vocab(
-        tmp_path / "vocab",
-        approaches=_DEFAULT_APPROACHES,
-        indications=_DEFAULT_INDICATIONS,
-    )
+    vocab_dir = tmp_path / "vocab"
     _seed_picklist(vocab_dir / "picklists", "procedure", "colorectal", None)
     _seed_manifest(paths, _manifest_row("UCD-FIL-001"))
     before_csv = paths.manifest_csv.read_bytes()
@@ -861,7 +807,9 @@ def test_commit_exception_inside_transaction_logs_exception_failure(
     tmp_path, monkeypatch
 ):
     paths, vocab_dir, before_csv = _setup_dry_run(tmp_path)
-    monkeypatch.setenv("PIPELINE_VOCAB_DIR", str(vocab_dir))
+    monkeypatch.setenv(
+        "PIPELINE_PICKLIST_DIR", str(vocab_dir / "picklists")
+    )
     monkeypatch.setenv("PIPELINE_NAS_ROOT", str(paths.root))
 
     from pipeline import csv_io
@@ -971,7 +919,9 @@ def test_commit_audit_before_uses_locked_snapshot_not_pre_snapshot(
     leaving CsvTable.transaction() unpatched. The audit's `before` must
     reflect the locked read, not the stale pre-snapshot."""
     paths, vocab_dir, _ = _setup_dry_run(tmp_path)
-    monkeypatch.setenv("PIPELINE_VOCAB_DIR", str(vocab_dir))
+    monkeypatch.setenv(
+        "PIPELINE_PICKLIST_DIR", str(vocab_dir / "picklists")
+    )
     monkeypatch.setenv("PIPELINE_NAS_ROOT", str(paths.root))
 
     from pipeline import csv_io
