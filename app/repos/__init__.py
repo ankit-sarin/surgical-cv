@@ -14,6 +14,8 @@ from app.repos.cases import (  # noqa: F401  — re-export
     CaseRepository,
     CsvCaseRepository,
     InMemoryCaseRepository,
+    SubmitError,
+    SubmitResult,
 )
 from app.repos.picklists import (  # noqa: F401  — re-export
     InMemoryPicklistRepository,

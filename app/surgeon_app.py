@@ -18,6 +18,11 @@ from app.auth import (
     identity_string_for_request,
     lookup_active_user,
 )
+from app.intake.submit import (
+    SubmitOutcome,
+    ValidationContext,
+    handle_submit_request,
+)
 from app.phi import scan_for_phi
 from app.repos import (
     CsvCaseRepository,
@@ -147,7 +152,9 @@ def _picklist_choices(values: list[PicklistValue]) -> list:
 # ----- Intake Section 1: segment selection -----
 
 
-def _build_intake_section1(parent: gr.Blocks, segments_state, selected_state):
+def _build_intake_section1(
+    parent: gr.Blocks, segments_state, selected_state, show_more_state
+):
     """Render the segment-selection Section 1 inside the active Tab context."""
     gr.Markdown("### Section 1 — Raw segments")
     gr.Markdown(
@@ -156,8 +163,6 @@ def _build_intake_section1(parent: gr.Blocks, segments_state, selected_state):
         "you're submitting; check across groups if the auto-grouping "
         "merged or split incorrectly."
     )
-
-    show_more_state = gr.State(False)
 
     with gr.Row():
         refresh_btn = gr.Button("Refresh", variant="secondary", size="sm")
@@ -396,6 +401,9 @@ def _build_intake_section3(
     or_room_state,
     indication_state,
 ):
+    """Returns the stable or_room textbox handle so Section 5's reset
+    can clear its DOM value (gr.State resets alone don't propagate into
+    static textboxes — that's the Spec H/I locked pattern)."""
     gr.Markdown("### Section 3 — Case context")
 
     # or_room lives OUTSIDE the @gr.render so user keystrokes don't trigger
@@ -431,6 +439,8 @@ def _build_intake_section3(
             allow_custom_value=False,
         )
         ind_dd.change(lambda v: v, inputs=ind_dd, outputs=indication_state)
+
+    return or_tb
 
 
 # ----- Intake Section 4: notes (with soft PHI warning) -----
@@ -490,6 +500,9 @@ def _build_intake_section4(
     notes_state,
     notes_phi_warnings_state,
 ):
+    """Returns ``(notes_tb, counter_md, phi_warning_md)`` so Section 5 can
+    reset all three on auto-clear (static textbox + the two derived
+    markdowns)."""
     gr.Markdown("### Section 4 — Notes")
 
     # Static textbox (same focus-preservation pattern as Section 3's or_room):
@@ -516,6 +529,295 @@ def _build_intake_section4(
         outputs=counter_md,
     )
 
+    return notes_tb, counter_md, phi_warning_md
+
+
+# ----- Intake Section 5: submit handler integration -----
+
+
+def _format_success_banner(ucd_fil_id: str) -> str:
+    return (
+        f"✓ Case **{ucd_fil_id}** submitted. Processing typically "
+        "begins within 10 minutes."
+    )
+
+
+# Reset value for the form-cleared notice (used by the Clear-form button).
+_CLEAR_FORM_BANNER = "Form cleared."
+
+
+def _empty_picklists() -> dict[str, list[PicklistValue]]:
+    return {field: [] for field in _PICKLIST_FIELDS_FOR_INTAKE}
+
+
+def _build_intake_section5(
+    parent: gr.Blocks,
+    *,
+    # gr.State seams from Sections 1-4 — full reset on success / clear.
+    segments_state,
+    selected_state,
+    show_more_state,
+    picklists_state,
+    procedure_primary_state,
+    procedure_additional_state,
+    approach_state,
+    conversion_target_state,
+    case_year_state,
+    or_room_state,
+    indication_state,
+    notes_state,
+    notes_phi_warnings_state,
+    # Static textboxes + derived markdowns — explicit value resets per the
+    # Spec H/I locked pattern.
+    or_room_tb,
+    notes_tb,
+    notes_counter_md,
+    notes_phi_warning_md,
+    # Banner above Section 1.
+    success_banner_md,
+):
+    gr.Markdown("### Section 5 — Review and submit")
+
+    validation_error_md = gr.Markdown("")
+
+    with gr.Group(visible=False) as phi_confirm_group:
+        gr.Markdown(
+            "⚠️ **Possible PHI in notes.** Review before submitting:"
+        )
+        phi_confirm_message_md = gr.Markdown("")
+        gr.Markdown(
+            "If the notes are clean, click Confirm and submit. Otherwise "
+            "cancel, edit Section 4, and resubmit."
+        )
+        with gr.Row():
+            confirm_submit_btn = gr.Button(
+                "Confirm and submit", variant="primary"
+            )
+            cancel_btn = gr.Button("Cancel", variant="secondary")
+
+    with gr.Row():
+        clear_btn = gr.Button(
+            "Clear form", variant="secondary", size="sm"
+        )
+        submit_btn = gr.Button("Submit case", variant="primary")
+
+    # Shared input list for both Submit and Confirm — keeps the two click
+    # handlers (which only differ in whether they bypass the PHI gate)
+    # parameter-aligned with one source of truth.
+    handler_inputs = [
+        segments_state,
+        selected_state,
+        picklists_state,
+        procedure_primary_state,
+        procedure_additional_state,
+        approach_state,
+        conversion_target_state,
+        case_year_state,
+        or_room_state,
+        indication_state,
+        notes_state,
+        notes_phi_warnings_state,
+    ]
+
+    # Outputs the submit / confirm handlers must produce a tuple matching.
+    handler_outputs = [
+        success_banner_md,
+        validation_error_md,
+        phi_confirm_group,
+        phi_confirm_message_md,
+        # 13 gr.State seams (excluding picklists_state — kept loaded):
+        segments_state,
+        selected_state,
+        show_more_state,
+        procedure_primary_state,
+        procedure_additional_state,
+        approach_state,
+        conversion_target_state,
+        case_year_state,
+        or_room_state,
+        indication_state,
+        notes_state,
+        notes_phi_warnings_state,
+        # Static textbox values + derived markdowns:
+        or_room_tb,
+        notes_tb,
+        notes_counter_md,
+        notes_phi_warning_md,
+    ]
+
+    def _no_op_tuple(
+        segments, selected, picklists, p_primary, p_additional, approach,
+        conv_target, case_year, or_room, indication, notes, phi_warnings,
+    ):
+        """Return a tuple matching ``handler_outputs`` that leaves every
+        state seam unchanged. Used for the validation-error path."""
+        return (
+            gr.update(value=""),                  # success_banner_md
+            gr.update(),                          # validation_error_md (overwritten)
+            gr.update(visible=False),             # phi_confirm_group
+            gr.update(),                          # phi_confirm_message_md
+            segments,
+            selected,
+            gr.update(),                          # show_more_state
+            p_primary,
+            p_additional,
+            approach,
+            conv_target,
+            case_year,
+            or_room,
+            indication,
+            notes,
+            phi_warnings,
+            gr.update(),                          # or_room_tb
+            gr.update(),                          # notes_tb
+            gr.update(),                          # notes_counter_md
+            gr.update(),                          # notes_phi_warning_md
+        )
+
+    def _reset_tuple(banner_text: str, request: gr.Request | None = None):
+        """Tuple matching ``handler_outputs`` for the full auto-clear:
+        success banner set, all 13 data states reset to defaults, both
+        static textboxes cleared, Section 4 markdowns reset to neutral."""
+        fresh_segments = fetch_segments(request) if request else []
+        return (
+            gr.update(value=banner_text),         # success_banner_md
+            gr.update(value=""),                  # validation_error_md
+            gr.update(visible=False),             # phi_confirm_group
+            gr.update(value=""),                  # phi_confirm_message_md
+            fresh_segments,                       # segments_state
+            sorted(s.filename for s in fresh_segments),  # selected_state
+            False,                                # show_more_state
+            None,                                 # procedure_primary_state
+            [],                                   # procedure_additional_state
+            None,                                 # approach_state
+            None,                                 # conversion_target_state
+            None,                                 # case_year_state
+            None,                                 # or_room_state
+            None,                                 # indication_state
+            None,                                 # notes_state
+            {},                                   # notes_phi_warnings_state
+            gr.update(value=""),                  # or_room_tb (DOM clear)
+            gr.update(value=""),                  # notes_tb (DOM clear)
+            _format_notes_counter(0),             # notes_counter_md
+            "",                                   # notes_phi_warning_md
+        )
+
+    def _dispatch_submit(
+        request: gr.Request,
+        segments, selected, picklists, p_primary, p_additional, approach,
+        conv_target, case_year, or_room, indication, notes, phi_warnings,
+        *,
+        phi_already_confirmed: bool,
+    ):
+        scope = _scope_from_request(request)
+        if scope is None:
+            outputs = list(_no_op_tuple(
+                segments, selected, picklists, p_primary, p_additional,
+                approach, conv_target, case_year, or_room, indication,
+                notes, phi_warnings,
+            ))
+            outputs[1] = gr.update(value=(
+                "⚠️ Not signed in or session expired. Reload to log in again."
+            ))
+            return tuple(outputs)
+
+        ctx = ValidationContext(
+            segments_selected=selected or [],
+            procedure_primary=p_primary,
+            procedure_additional=p_additional or [],
+            approach=approach,
+            conversion_target=conv_target,
+            case_year=case_year,
+            or_room=or_room,
+            indication=indication,
+        )
+        outcome: SubmitOutcome = handle_submit_request(
+            surgeon=scope.folder_slug,
+            ctx=ctx,
+            notes=notes,
+            notes_phi_warnings=phi_warnings,
+            picklists=picklists or _empty_picklists(),
+            segment_filenames=list(selected or []),
+            submit_fn=scope.repos.case.submit_case,
+            phi_already_confirmed=phi_already_confirmed,
+        )
+
+        if outcome.kind == "validation_error":
+            outputs = list(_no_op_tuple(
+                segments, selected, picklists, p_primary, p_additional,
+                approach, conv_target, case_year, or_room, indication,
+                notes, phi_warnings,
+            ))
+            outputs[1] = gr.update(value=outcome.error_block)
+            return tuple(outputs)
+
+        if outcome.kind == "phi_confirm":
+            outputs = list(_no_op_tuple(
+                segments, selected, picklists, p_primary, p_additional,
+                approach, conv_target, case_year, or_room, indication,
+                notes, phi_warnings,
+            ))
+            outputs[1] = gr.update(value="")
+            outputs[2] = gr.update(visible=True)
+            outputs[3] = gr.update(value=_format_phi_warning(notes))
+            return tuple(outputs)
+
+        if outcome.kind == "infra_error":
+            outputs = list(_no_op_tuple(
+                segments, selected, picklists, p_primary, p_additional,
+                approach, conv_target, case_year, or_room, indication,
+                notes, phi_warnings,
+            ))
+            outputs[1] = gr.update(value=(
+                f"⚠️ Submission failed: {outcome.infra_error}"
+            ))
+            return tuple(outputs)
+
+        # outcome.kind == "success"
+        result = outcome.submit_result
+        return _reset_tuple(
+            _format_success_banner(result.ucd_fil_id), request=request
+        )
+
+    def _on_submit(
+        request: gr.Request,
+        segments, selected, picklists, p_primary, p_additional, approach,
+        conv_target, case_year, or_room, indication, notes, phi_warnings,
+    ):
+        return _dispatch_submit(
+            request, segments, selected, picklists, p_primary, p_additional,
+            approach, conv_target, case_year, or_room, indication, notes,
+            phi_warnings, phi_already_confirmed=False,
+        )
+
+    def _on_confirm(
+        request: gr.Request,
+        segments, selected, picklists, p_primary, p_additional, approach,
+        conv_target, case_year, or_room, indication, notes, phi_warnings,
+    ):
+        return _dispatch_submit(
+            request, segments, selected, picklists, p_primary, p_additional,
+            approach, conv_target, case_year, or_room, indication, notes,
+            phi_warnings, phi_already_confirmed=True,
+        )
+
+    def _on_cancel():
+        return gr.update(visible=False)
+
+    def _on_clear(request: gr.Request):
+        return _reset_tuple(_CLEAR_FORM_BANNER, request=request)
+
+    submit_btn.click(
+        _on_submit, inputs=handler_inputs, outputs=handler_outputs
+    )
+    confirm_submit_btn.click(
+        _on_confirm, inputs=handler_inputs, outputs=handler_outputs
+    )
+    cancel_btn.click(_on_cancel, outputs=phi_confirm_group)
+    clear_btn.click(_on_clear, outputs=handler_outputs)
+
+    return validation_error_md, phi_confirm_group, submit_btn, clear_btn
+
 
 # ----- top-level Blocks build -----
 
@@ -527,10 +829,11 @@ def build_surgeon_app() -> gr.Blocks:
         identity_md = gr.Markdown()
         with gr.Tabs():
             with gr.Tab("Intake"):
-                # Shared state across sections — Section 5 will consume all
+                # Shared state across sections — Section 5 consumes all
                 # of them at submit time.
                 segments_state = gr.State([])
                 selected_state = gr.State([])
+                show_more_state = gr.State(False)
                 picklists_state = gr.State(
                     {field: [] for field in _PICKLIST_FIELDS_FOR_INTAKE}
                 )
@@ -544,8 +847,11 @@ def build_surgeon_app() -> gr.Blocks:
                 notes_state = gr.State(None)
                 notes_phi_warnings_state = gr.State({})
 
+                # Section 5 updates this; lives above Section 1 per spec.
+                success_banner_md = gr.Markdown("")
+
                 _build_intake_section1(
-                    blocks, segments_state, selected_state
+                    blocks, segments_state, selected_state, show_more_state
                 )
                 _build_intake_section2(
                     blocks,
@@ -555,15 +861,38 @@ def build_surgeon_app() -> gr.Blocks:
                     approach_state,
                     conversion_target_state,
                 )
-                _build_intake_section3(
+                or_room_tb = _build_intake_section3(
                     blocks,
                     picklists_state,
                     case_year_state,
                     or_room_state,
                     indication_state,
                 )
-                _build_intake_section4(
-                    blocks, notes_state, notes_phi_warnings_state
+                notes_tb, notes_counter_md, notes_phi_warning_md = (
+                    _build_intake_section4(
+                        blocks, notes_state, notes_phi_warnings_state
+                    )
+                )
+                _build_intake_section5(
+                    blocks,
+                    segments_state=segments_state,
+                    selected_state=selected_state,
+                    show_more_state=show_more_state,
+                    picklists_state=picklists_state,
+                    procedure_primary_state=procedure_primary_state,
+                    procedure_additional_state=procedure_additional_state,
+                    approach_state=approach_state,
+                    conversion_target_state=conversion_target_state,
+                    case_year_state=case_year_state,
+                    or_room_state=or_room_state,
+                    indication_state=indication_state,
+                    notes_state=notes_state,
+                    notes_phi_warnings_state=notes_phi_warnings_state,
+                    or_room_tb=or_room_tb,
+                    notes_tb=notes_tb,
+                    notes_counter_md=notes_counter_md,
+                    notes_phi_warning_md=notes_phi_warning_md,
+                    success_banner_md=success_banner_md,
                 )
 
                 blocks.load(fetch_picklists, None, picklists_state)
