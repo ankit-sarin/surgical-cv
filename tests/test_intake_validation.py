@@ -359,7 +359,7 @@ def test_handle_clean_no_phi_returns_success():
 
 
 def test_handle_infra_error_surfaces_as_infra_error_kind():
-    def boom(_row, _segments):
+    def boom(_row, _segments, *, expected_surgeon):
         raise SubmitError("disk full")
 
     outcome = handle_submit_request(
@@ -380,7 +380,7 @@ def test_handle_validation_failure_does_not_call_submit_fn():
     """Defense in depth: validation must short-circuit the submit_fn."""
     called = []
 
-    def tracker(row, segments):
+    def tracker(row, segments, *, expected_surgeon):
         called.append((row, segments))
         return None
 

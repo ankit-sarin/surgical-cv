@@ -54,6 +54,17 @@ class SubmitError(Exception):
     (manifest unreachable, marker write failed, allocation race, etc.)."""
 
 
+class RepoIntegrityError(Exception):
+    """Repo-layer invariant violation. Distinct from ``SubmitError`` (which
+    is for surgeon-facing infrastructure soft-failures) — this is a
+    programming / architectural breach (e.g., a caller passed a surgeon
+    string that doesn't match the authenticated identity). Should fail loud,
+    never collapse into a polite UI error.
+
+    F-013: raised by ``submit_case`` when the caller-supplied
+    ``partial_row['surgeon']`` does not match ``expected_surgeon``."""
+
+
 def _next_ucd_fil_id(existing_ids: Iterable[str]) -> str:
     """Allocate the next case ID as max-numeric-suffix + 1, zero-padded to
     three digits. Tolerates gaps (001/002/005 → 006). Non-matching ids
@@ -136,7 +147,11 @@ class CaseRepository(Protocol):
     def get_case(self, case_id: str) -> dict | None: ...
     def case_belongs_to(self, case_id: str, folder_slug: str) -> bool: ...
     def submit_case(
-        self, partial_row: dict, segment_filenames: list[str]
+        self,
+        partial_row: dict,
+        segment_filenames: list[str],
+        *,
+        expected_surgeon: str,
     ) -> SubmitResult: ...
 
 
@@ -204,11 +219,30 @@ class CsvCaseRepository:
         return case is not None and case.get("surgeon") == folder_slug
 
     def submit_case(
-        self, partial_row: dict, segment_filenames: list[str]
+        self,
+        partial_row: dict,
+        segment_filenames: list[str],
+        *,
+        expected_surgeon: str,
     ) -> SubmitResult:
         """Allocate a new ``ucd_fil_id`` under flock, append the row, then
         drop the ready marker. Returns ``SubmitResult`` on success;
-        raises ``SubmitError`` on any infrastructure failure."""
+        raises ``SubmitError`` on any infrastructure failure.
+
+        F-013: ``expected_surgeon`` MUST equal ``partial_row['surgeon']``.
+        Mismatch raises ``RepoIntegrityError`` before any I/O — fail fast,
+        no manifest read, no marker write, no lock acquired. The check
+        guards against a future caller threading a less-trusted surgeon
+        string (admin cross-surgeon path, Action Required resolve-on-behalf,
+        a CLI helper); today's only caller already passes the authenticated
+        ``scope.folder_slug`` so the assertion is a defense-in-depth gate."""
+        if partial_row.get("surgeon") != expected_surgeon:
+            raise RepoIntegrityError(
+                f"submit_case surgeon mismatch: "
+                f"expected={expected_surgeon!r}, "
+                f"partial_row={partial_row.get('surgeon')!r}"
+            )
+
         from pipeline.csv_io import CsvTable
         from pipeline.schemas import CASE_MANIFEST_COLUMNS, CaseManifestRow
 
@@ -282,10 +316,22 @@ class InMemoryCaseRepository:
         return row is not None and row.get("surgeon") == folder_slug
 
     def submit_case(
-        self, partial_row: dict, segment_filenames: list[str]
+        self,
+        partial_row: dict,
+        segment_filenames: list[str],
+        *,
+        expected_surgeon: str,
     ) -> SubmitResult:
         """Simulated atomic allocation for tests — same ID-allocation
-        semantics as the CSV-backed repo, no marker file written."""
+        semantics as the CSV-backed repo, no marker file written. Mirrors
+        the F-013 surgeon-mismatch guard so tests that exercise the in-memory
+        repo see the same fail-fast behavior as production."""
+        if partial_row.get("surgeon") != expected_surgeon:
+            raise RepoIntegrityError(
+                f"submit_case surgeon mismatch: "
+                f"expected={expected_surgeon!r}, "
+                f"partial_row={partial_row.get('surgeon')!r}"
+            )
         new_id = _next_ucd_fil_id(self._cases.keys())
         submitted_at = datetime.now(timezone.utc).isoformat()
         self._cases[new_id] = {

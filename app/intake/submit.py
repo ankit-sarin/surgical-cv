@@ -199,7 +199,12 @@ def handle_submit_request(
 
     partial_row = build_partial_row(surgeon, ctx, notes)
     try:
-        result = submit_fn(partial_row, segment_filenames)
+        # F-013: thread the authenticated surgeon as expected_surgeon so the
+        # repo's defense-in-depth assertion catches any future caller that
+        # builds partial_row from a less-trusted source than the scope.
+        result = submit_fn(
+            partial_row, segment_filenames, expected_surgeon=surgeon
+        )
     except SubmitError as e:
         return SubmitOutcome(kind="infra_error", infra_error=str(e))
     return SubmitOutcome(kind="success", submit_result=result)

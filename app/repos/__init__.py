@@ -14,6 +14,7 @@ from app.repos.cases import (  # noqa: F401  — re-export
     CaseRepository,
     CsvCaseRepository,
     InMemoryCaseRepository,
+    RepoIntegrityError,
     SubmitError,
     SubmitResult,
 )
