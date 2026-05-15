@@ -906,3 +906,21 @@ def test_metadata_specialties_map_routes_indication_to_colorectal():
 def test_metadata_specialties_map_routes_procedure_to_colorectal():
     from pipeline.commands.metadata import _PICKLIST_SPECIALTIES
     assert _PICKLIST_SPECIALTIES["procedure"] == "colorectal"
+
+
+# ----- F-021: app.db file mode is 600 (owner-only) -----
+
+
+def test_init_db_creates_owner_only_file_mode(tmp_path):
+    """F-021: init_db tightens umask to 0o077 before sqlite3 creates the
+    file so app.db is owner-readable only. Pre-fix it inherited the
+    process umask (typically 022 → mode 644), exposing the users table
+    to any local account on the DGX."""
+    db = tmp_path / "test.db"
+    result = _init(db)
+    assert result.returncode == 0, result.stderr
+    assert db.exists()
+    mode = db.stat().st_mode & 0o777
+    assert mode == 0o600, (
+        f"expected mode 0o600 (owner-only), got 0o{mode:03o}"
+    )

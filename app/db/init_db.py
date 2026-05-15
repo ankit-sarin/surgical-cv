@@ -11,6 +11,7 @@ single transaction.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -43,7 +44,17 @@ def main(argv: list[str] | None = None) -> int:
     target.parent.mkdir(parents=True, exist_ok=True)
     schema_sql = _schema_path().read_text()
 
-    conn = connect(target)
+    # F-021: tighten umask before sqlite3 creates the file so app.db lands
+    # at mode 600 (owner-only). Pre-fix it inherited the process umask
+    # (typically 022 → mode 644 → world-readable on the DGX, exposing the
+    # users table — usernames, roles, emails — to any local account).
+    # umask is restored after connect() returns so we don't tighten the
+    # global state for the rest of the process.
+    prior_umask = os.umask(0o077)
+    try:
+        conn = connect(target)
+    finally:
+        os.umask(prior_umask)
     try:
         conn.executescript(schema_sql)
         conn.commit()

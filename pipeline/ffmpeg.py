@@ -111,6 +111,13 @@ def parse_bdv_timestamp(filename: str) -> str:
 
 
 def _escape_concat_path(p: str) -> str:
+    # F-024: ffmpeg's concat demuxer parses the list line-by-line. A path
+    # containing a newline would corrupt the format (next line interpreted
+    # as a directive). NAS paths from BDV recordings shouldn't contain
+    # newlines, but a defensive guard prevents an exotic filename from
+    # silently breaking the concat pass.
+    if "\n" in p:
+        raise ValueError(f"path contains newline: {p!r}")
     return p.replace("'", "'\\''")
 
 

@@ -221,7 +221,12 @@ def authenticate_dsm(
         params["otp_code"] = otp_code
 
     try:
-        resp = httpx.post(url, data=params, verify=False, timeout=10.0)
+        # F-020: TLS verification env-gated. Default preserves the prior
+        # behavior (verify=False — DSM uses a self-signed cert on the
+        # private network); operators can flip on cert verification by
+        # setting DSM_TLS_VERIFY=1 once cert pinning lands.
+        verify = os.environ.get("DSM_TLS_VERIFY", "0") != "0"
+        resp = httpx.post(url, data=params, verify=verify, timeout=10.0)
         resp.raise_for_status()
         data = resp.json()
     except (httpx.HTTPError, ValueError):

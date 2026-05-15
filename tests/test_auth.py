@@ -9,7 +9,7 @@ import os
 import httpx
 import pytest
 
-from tests.conftest import TEST_SECRET, patch_dsm
+from tests.conftest import TEST_DSM_URL, TEST_SECRET, patch_dsm
 
 
 # ----- /healthz -----
@@ -565,3 +565,54 @@ def test_derive_partial_auth_fernet_key_is_deterministic(monkeypatch):
     monkeypatch.setenv("APP_SESSION_SECRET", "z" * 32)
     key_other = _derive_partial_auth_fernet_key()
     assert key_other != key1
+
+
+# ----- F-020: DSM_TLS_VERIFY env-gating -----
+
+
+def test_dsm_tls_verify_default_off(monkeypatch):
+    """F-020 default: DSM_TLS_VERIFY unset → httpx.post called with
+    verify=False (preserves the prior behavior — DSM uses a self-signed
+    cert on the private network, cert pinning is a future hardening)."""
+    from app.auth import authenticate_dsm
+
+    monkeypatch.delenv("DSM_TLS_VERIFY", raising=False)
+    monkeypatch.setenv("NAS_DSM_URL", TEST_DSM_URL)
+    monkeypatch.delenv("MOCK_AUTH", raising=False)
+
+    captured = {}
+
+    def capturing_post(url, data=None, **kwargs):
+        captured["verify"] = kwargs.get("verify")
+        return httpx.Response(
+            200, json={"success": True},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr("app.auth.httpx.post", capturing_post)
+    authenticate_dsm("asarin", "x")
+    assert captured["verify"] is False
+
+
+def test_dsm_tls_verify_enabled_when_env_set(monkeypatch):
+    """F-020 flip: DSM_TLS_VERIFY=1 → httpx.post called with verify=True.
+    Operators turn this on once cert pinning lands; the default stays
+    closed-fail-permissive for the smoke environment."""
+    from app.auth import authenticate_dsm
+
+    monkeypatch.setenv("DSM_TLS_VERIFY", "1")
+    monkeypatch.setenv("NAS_DSM_URL", TEST_DSM_URL)
+    monkeypatch.delenv("MOCK_AUTH", raising=False)
+
+    captured = {}
+
+    def capturing_post(url, data=None, **kwargs):
+        captured["verify"] = kwargs.get("verify")
+        return httpx.Response(
+            200, json={"success": True},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr("app.auth.httpx.post", capturing_post)
+    authenticate_dsm("asarin", "x")
+    assert captured["verify"] is True

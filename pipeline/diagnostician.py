@@ -308,8 +308,12 @@ def diagnose(evidence: dict[str, Any]) -> DiagnosticianVerdict:
       - json.JSONDecodeError or pydantic.ValidationError: retry once with
         identical prompt. On second failure, raise DiagnosticianInfraError
         with reason="malformed_output".
-      - httpx.ConnectError, httpx.TimeoutException, ollama.ResponseError:
-        no retry. Raise DiagnosticianInfraError with reason="ollama_unavailable".
+      - httpx.ConnectError, ollama.ResponseError: no retry. Raise
+        DiagnosticianInfraError with reason="ollama_unavailable".
+      - httpx.TimeoutException: caught inside ``_call_ollama`` (F-001) and
+        re-raised as ``RuntimeError("diagnostician timed out after Ns")`` so
+        verify's generic exception handler records a per-case stage failure
+        instead of aborting the batch via the ollama-unavailable path.
     """
     prompt = build_prompt(evidence)
     raw_outputs: list[str] = []
@@ -317,7 +321,11 @@ def diagnose(evidence: dict[str, Any]) -> DiagnosticianVerdict:
     for attempt in (1, 2):
         try:
             raw = _call_ollama(prompt)
-        except (httpx.ConnectError, httpx.TimeoutException, ollama.ResponseError) as e:
+        except (httpx.ConnectError, ollama.ResponseError) as e:
+            # F-031: ``httpx.TimeoutException`` removed from this tuple — it
+            # was structurally unreachable after F-001 made ``_call_ollama``
+            # catch and re-raise it as ``RuntimeError`` before it could
+            # propagate here.
             raise DiagnosticianInfraError(
                 reason="ollama_unavailable", error=str(e)
             ) from e

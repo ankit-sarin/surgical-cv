@@ -426,3 +426,33 @@ def test_integration_real_ffmpeg_deid(tmp_path):
     tags = probe["format"].get("tags", {})
     assert "title" not in tags
     assert "comment" not in tags
+
+
+# ----- F-024: concat-list path escape rejects newlines -----
+
+
+def test_escape_concat_path_rejects_newline():
+    """F-024: ffmpeg's concat demuxer parses the list line-by-line. A path
+    with an embedded newline would corrupt the format. NAS filenames
+    shouldn't contain newlines, but the helper rejects them defensively."""
+    from pipeline.ffmpeg import _escape_concat_path
+
+    with pytest.raises(ValueError, match="newline"):
+        _escape_concat_path("/mnt/nas/raw-sarin/has\nnewline.mp4")
+
+
+def test_escape_concat_path_normal_path_passes():
+    """Regression: clean paths still round-trip through the escape helper."""
+    from pipeline.ffmpeg import _escape_concat_path
+
+    assert (
+        _escape_concat_path("/mnt/nas/raw-sarin/capt0_20260101-080000.mp4")
+        == "/mnt/nas/raw-sarin/capt0_20260101-080000.mp4"
+    )
+
+
+def test_escape_concat_path_single_quote_still_escaped():
+    """Regression: the existing single-quote escape behavior is unchanged."""
+    from pipeline.ffmpeg import _escape_concat_path
+
+    assert _escape_concat_path("o'reilly.mp4") == "o'\\''reilly.mp4"

@@ -31,7 +31,6 @@ unchanged.
 import json
 import re
 import sys
-import traceback
 from argparse import Namespace
 
 from pipeline.audit import log_audit
@@ -444,6 +443,12 @@ def _commit(args: Namespace, paths: NasPaths | None) -> int:
             before_value = getattr(locked_row, field)
             tx.update(case_id, **{field: coerced})
     except Exception as e:
+        # F-025: error summary matches the shape used in concat / deid /
+        # verify ("ExceptionType: message") instead of the full
+        # traceback.format_exc(). The full traceback included file paths
+        # from the surgical-cv source tree — operator log surface, not
+        # surgeon-facing, but inconsistent with the rest of the pipeline
+        # and disclosed source-tree paths.
         log_audit(
             paths.audit_log,
             "metadata",
@@ -452,7 +457,7 @@ def _commit(args: Namespace, paths: NasPaths | None) -> int:
             case=case_id,
             details={
                 "failure_kind": "exception",
-                "error": traceback.format_exc(),
+                "error": f"{type(e).__name__}: {e}",
             },
         )
         print(

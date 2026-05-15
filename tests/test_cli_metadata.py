@@ -836,10 +836,13 @@ def test_commit_exception_inside_transaction_logs_exception_failure(
     assert e["outcome"] == "failure"
     assert e["case"] == "UCD-FIL-001"
     assert e["details"]["failure_kind"] == "exception"
-    # Traceback contents are environment-specific, but the marker text must
-    # appear so we know the right exception was captured.
-    assert "RuntimeError" in e["details"]["error"]
-    assert "simulated tempfile rename failure" in e["details"]["error"]
+    # F-025: error summary is the single-line "ExceptionType: message" shape
+    # used by concat / deid / verify, not a full traceback. Source-tree paths
+    # like "pipeline/csv_io.py" must NOT appear (they used to via
+    # traceback.format_exc()).
+    assert e["details"]["error"] == "RuntimeError: simulated tempfile rename failure"
+    assert "Traceback" not in e["details"]["error"]
+    assert "pipeline/" not in e["details"]["error"]
 
 
 # NOTE: previous test_commit_notes_field_writes_nudge_to_stderr removed in
