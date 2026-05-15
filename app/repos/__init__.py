@@ -1,8 +1,9 @@
-"""Repository package: data-access layer for case ownership and raw segments.
+"""Repository package: data-access layer for case ownership, raw segments,
+and picklists.
 
-``Repos`` is the per-request bundle that scopes hold; future repos for
-pipeline state, attention items, etc. land here as their respective tabs
-are specced.
+``Repos`` is the per-request bundle scopes hold; future repos (pipeline
+state, attention items, etc.) land here as their respective tabs are
+specced.
 """
 
 from __future__ import annotations
@@ -13,6 +14,12 @@ from app.repos.cases import (  # noqa: F401  — re-export
     CaseRepository,
     CsvCaseRepository,
     InMemoryCaseRepository,
+)
+from app.repos.picklists import (  # noqa: F401  — re-export
+    InMemoryPicklistRepository,
+    PicklistRepository,
+    PicklistValue,
+    SqlitePicklistRepository,
 )
 from app.repos.segments import (  # noqa: F401  — re-export
     FilesystemRawSegmentRepository,
@@ -26,3 +33,4 @@ from app.repos.segments import (  # noqa: F401  — re-export
 class Repos:
     case: CaseRepository
     segment: RawSegmentRepository
+    picklist: PicklistRepository

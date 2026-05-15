@@ -179,14 +179,19 @@ def _mock_dsm(
 
 
 def lookup_active_user(username: str) -> dict | None:
-    """Return {username, role, folder_slug, specialty, display_name} for an
-    ACTIVE user, or ``None`` if missing / inactive. Same return shape
-    collapses both into the same caller-side reject path — no enumeration
-    leak."""
+    """Return the full ``users`` row (as a dict) for an ACTIVE user, or
+    ``None`` if missing / inactive. Same return shape collapses both into
+    the same caller-side reject path — no enumeration leak.
+
+    Returning every column (username, role, folder_slug, specialty,
+    display_name, email, active, created_at, last_login_at, notes) keeps
+    downstream consumers — scope construction, identity rendering,
+    picklist filtering — from re-doing the lookup."""
     conn = connect()
     try:
         row = conn.execute(
-            "SELECT username, role, folder_slug, specialty, display_name, active "
+            "SELECT username, role, folder_slug, specialty, display_name, "
+            "       email, active, created_at, last_login_at, notes "
             "FROM users WHERE username = ?",
             (username,),
         ).fetchone()
@@ -194,13 +199,7 @@ def lookup_active_user(username: str) -> dict | None:
         conn.close()
     if row is None or row["active"] != 1:
         return None
-    return {
-        "username": row["username"],
-        "role": row["role"],
-        "folder_slug": row["folder_slug"],
-        "specialty": row["specialty"],
-        "display_name": row["display_name"],
-    }
+    return dict(row)
 
 
 # ----- cookie helpers -----

@@ -1,11 +1,13 @@
 """Surgeon Gradio Blocks app.
 
-Intake tab now hosts Section 1 (segment selection). My Cases and Action
-Required remain placeholders until their own specs land.
+Intake tab hosts Section 1 (segment selection — Spec E) and Section 2
+(procedure + approach — Spec G). Sections 3-5 land in future specs.
+My Cases and Action Required remain placeholders until their own specs.
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime
 
 import gradio as gr
@@ -19,8 +21,10 @@ from app.auth import (
 from app.repos import (
     CsvCaseRepository,
     FilesystemRawSegmentRepository,
+    PicklistValue,
     Repos,
     SegmentRecord,
+    SqlitePicklistRepository,
 )
 from app.scopes import SurgeonScope
 from pipeline.grouping import group_segments
@@ -30,6 +34,13 @@ _EMPTY_STATE_MSG = (
     "**No segments found.** Drop video files into N:\\ via Citrix → H:\\ → N:\\ "
     "to begin, then hit Refresh."
 )
+
+# Sentinel for the conversion_target_state when the "Converted" checkbox is
+# on but no target approach is picked yet. ``None`` = unchecked; the empty
+# string = checked-no-target; any other string = the chosen target approach.
+# Section 5 will treat None as "not a conversion case", empty as a hard
+# validation error, anything else as the conversion target.
+_CONV_PENDING = ""
 
 
 def _identity(request: gr.Request) -> str:
@@ -59,7 +70,6 @@ def _fmt_segment_time(ts: datetime, now: datetime | None = None) -> str:
 
 
 def fmt_segment_label(seg: SegmentRecord, now: datetime | None = None) -> str:
-    """Single-line label for a segment checkbox: time — filename — size."""
     return f"{_fmt_segment_time(seg.timestamp, now=now)}  ·  {seg.filename}  ·  {_fmt_size(seg.size_bytes)}"
 
 
@@ -75,7 +85,7 @@ def fmt_group_header(group, now: datetime | None = None) -> str:
     return f"{date_str}  ·  {count} {seg_word}  ·  {_fmt_size(total_bytes)}"
 
 
-# ----- segment fetch (per-request scope construction) -----
+# ----- per-request scope construction -----
 
 
 def _scope_from_request(request: gr.Request | None) -> SurgeonScope | None:
@@ -91,31 +101,54 @@ def _scope_from_request(request: gr.Request | None) -> SurgeonScope | None:
     repos = Repos(
         case=CsvCaseRepository(),
         segment=FilesystemRawSegmentRepository(),
+        picklist=SqlitePicklistRepository(),
     )
-    return SurgeonScope(user["username"], user["folder_slug"], repos)
+    return SurgeonScope(
+        user["username"],
+        user["folder_slug"],
+        repos,
+        specialty=user.get("specialty"),
+    )
 
 
 def fetch_segments(request: gr.Request) -> list[SegmentRecord]:
-    """Build scope from the request cookie and pull raw segments. Returns []
-    if the cookie is missing / invalid / the user isn't a surgeon — the
-    Gradio mount's auth_dependency has already gated /app/, so this is
-    defense-in-depth only."""
     scope = _scope_from_request(request)
     if scope is None:
         return []
     return list(scope.list_raw_segments())
 
 
+def fetch_picklists(request: gr.Request) -> dict[str, list[PicklistValue]]:
+    """Pull dropdown / radio choices for Section 2.
+
+    Per Spec G: picklist values aren't surgeon-authorization-scoped, only
+    specialty-scoped. We hit ``scope.repos.picklist.list_active`` directly
+    rather than via a scope method — the scope surface stays focused on
+    case authorization."""
+    scope = _scope_from_request(request)
+    if scope is None:
+        return {"procedure": [], "approach": []}
+    return {
+        "procedure": scope.repos.picklist.list_active(
+            "procedure", scope.specialty
+        ),
+        "approach": scope.repos.picklist.list_active(
+            "approach", scope.specialty
+        ),
+    }
+
+
+def _picklist_choices(values: list[PicklistValue]) -> list:
+    """Gradio Dropdown / Radio choices: (display_label, value) tuples,
+    preserving the repo-sorted ordering."""
+    return [(v.display_label, v.value) for v in values]
+
+
 # ----- Intake Section 1: segment selection -----
 
 
-def _build_intake_section(parent: gr.Blocks) -> None:
-    """Render the segment-selection Section 1 inside the active Tab context.
-
-    All state seams live in ``gr.State`` so downstream sections (2-5, spec'd
-    separately) can read them: ``segments_state`` holds the raw list,
-    ``selected_state`` holds the list of currently-checked filenames.
-    """
+def _build_intake_section1(parent: gr.Blocks, segments_state, selected_state):
+    """Render the segment-selection Section 1 inside the active Tab context."""
     gr.Markdown("### Section 1 — Raw segments")
     gr.Markdown(
         "Segments are auto-grouped by time proximity (1-hour gap = new "
@@ -124,8 +157,6 @@ def _build_intake_section(parent: gr.Blocks) -> None:
         "merged or split incorrectly."
     )
 
-    segments_state = gr.State([])
-    selected_state = gr.State([])
     show_more_state = gr.State(False)
 
     with gr.Row():
@@ -138,7 +169,6 @@ def _build_intake_section(parent: gr.Blocks) -> None:
             return
 
         groups = group_segments(segments)
-        # Newest first.
         groups = sorted(groups, key=lambda g: g.start, reverse=True)
 
         visible = groups if (show_more or len(groups) <= 3) else groups[:3]
@@ -186,6 +216,162 @@ def _build_intake_section(parent: gr.Blocks) -> None:
     )
 
 
+# ----- Intake Section 2: procedure + approach -----
+
+
+def _find_duplicates(primary: str | None, additionals: list) -> list[str]:
+    """Return the list of procedure values that appear more than once across
+    primary + additionals. Empty/None slots are ignored."""
+    selected = [primary] if primary else []
+    selected.extend(a for a in additionals if a)
+    counts = Counter(selected)
+    return sorted(v for v, c in counts.items() if c > 1)
+
+
+def _build_intake_section2(
+    parent: gr.Blocks,
+    picklists_state,
+    procedure_primary_state,
+    procedure_additional_state,
+    approach_state,
+    conversion_target_state,
+):
+    gr.Markdown("### Section 2 — Procedure + approach")
+
+    # ----- procedure block (primary + additionals) -----
+
+    @gr.render(
+        inputs=[
+            picklists_state,
+            procedure_primary_state,
+            procedure_additional_state,
+        ]
+    )
+    def render_procedures(picklists, primary, additionals):
+        proc_choices = _picklist_choices(picklists.get("procedure", []))
+
+        primary_dd = gr.Dropdown(
+            label="Primary procedure",
+            choices=proc_choices,
+            value=primary,
+            filterable=True,
+            allow_custom_value=False,
+        )
+        primary_dd.change(
+            lambda v: v, inputs=primary_dd, outputs=procedure_primary_state
+        )
+
+        if additionals:
+            gr.Markdown("**Additional procedures**")
+        for idx, val in enumerate(additionals):
+            with gr.Row():
+                add_dd = gr.Dropdown(
+                    label=f"Additional #{idx + 1}",
+                    choices=proc_choices,
+                    value=val,
+                    filterable=True,
+                    allow_custom_value=False,
+                    scale=4,
+                )
+                rm_btn = gr.Button("✕", scale=1, size="sm")
+
+                def _update_slot(new_val, current, i=idx):
+                    out = list(current)
+                    if i < len(out):
+                        out[i] = new_val
+                    return out
+
+                def _remove_slot(current, i=idx):
+                    return [v for j, v in enumerate(current) if j != i]
+
+                add_dd.change(
+                    _update_slot,
+                    inputs=[add_dd, procedure_additional_state],
+                    outputs=procedure_additional_state,
+                )
+                rm_btn.click(
+                    _remove_slot,
+                    inputs=procedure_additional_state,
+                    outputs=procedure_additional_state,
+                )
+
+        add_btn = gr.Button(
+            "+ Add additional procedure", variant="secondary", size="sm"
+        )
+        add_btn.click(
+            lambda current: list(current) + [None],
+            inputs=procedure_additional_state,
+            outputs=procedure_additional_state,
+        )
+
+        dupes = _find_duplicates(primary, additionals)
+        if dupes:
+            gr.Markdown(
+                f"⚠️ Duplicate procedure selection: **{', '.join(dupes)}**. "
+                "Each procedure can appear once per case."
+            )
+
+    # ----- approach block (primary + optional conversion) -----
+
+    @gr.render(
+        inputs=[
+            picklists_state,
+            approach_state,
+            conversion_target_state,
+        ]
+    )
+    def render_approach(picklists, approach, conv_target):
+        approach_values = picklists.get("approach", [])
+        approach_options = [v.value for v in approach_values]
+
+        primary_radio = gr.Radio(
+            label="Primary approach",
+            choices=approach_options,
+            value=approach,
+        )
+        primary_radio.change(
+            lambda v: v, inputs=primary_radio, outputs=approach_state
+        )
+
+        converted = conv_target is not None
+        conv_cb = gr.Checkbox(
+            label="Converted to a different approach",
+            value=converted,
+        )
+
+        def _toggle_conversion(checked, current):
+            if checked:
+                # Preserve any target the user previously picked; otherwise
+                # transition to the "checked-no-target" sentinel.
+                return current if current is not None else _CONV_PENDING
+            # Unchecked → clear target.
+            return None
+
+        conv_cb.change(
+            _toggle_conversion,
+            inputs=[conv_cb, conversion_target_state],
+            outputs=conversion_target_state,
+        )
+
+        if converted:
+            target_radio = gr.Radio(
+                label="Conversion target",
+                choices=approach_options,
+                value=conv_target if conv_target else None,
+            )
+            target_radio.change(
+                lambda v: v,
+                inputs=target_radio,
+                outputs=conversion_target_state,
+            )
+
+            if conv_target and approach and conv_target == approach:
+                gr.Markdown(
+                    "⚠️ Conversion target matches the primary approach. "
+                    "Pick a different target or uncheck Converted."
+                )
+
+
 # ----- top-level Blocks build -----
 
 
@@ -196,7 +382,29 @@ def build_surgeon_app() -> gr.Blocks:
         identity_md = gr.Markdown()
         with gr.Tabs():
             with gr.Tab("Intake"):
-                _build_intake_section(blocks)
+                # Shared state across sections — Section 5 will consume all
+                # of them at submit time.
+                segments_state = gr.State([])
+                selected_state = gr.State([])
+                picklists_state = gr.State({"procedure": [], "approach": []})
+                procedure_primary_state = gr.State(None)
+                procedure_additional_state = gr.State([])
+                approach_state = gr.State(None)
+                conversion_target_state = gr.State(None)
+
+                _build_intake_section1(
+                    blocks, segments_state, selected_state
+                )
+                _build_intake_section2(
+                    blocks,
+                    picklists_state,
+                    procedure_primary_state,
+                    procedure_additional_state,
+                    approach_state,
+                    conversion_target_state,
+                )
+
+                blocks.load(fetch_picklists, None, picklists_state)
             with gr.Tab("My Cases"):
                 gr.Markdown("**My Cases** — coming soon.")
             with gr.Tab("Action Required"):

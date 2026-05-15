@@ -50,6 +50,7 @@ from app.repos import (
     CsvCaseRepository,
     FilesystemRawSegmentRepository,
     Repos,
+    SqlitePicklistRepository,
 )
 from app.scopes import AdminScope, SurgeonScope, UserScope
 from app.surgeon_app import build_surgeon_app
@@ -138,10 +139,16 @@ def build_scope(
     repos = Repos(
         case=CsvCaseRepository(),
         segment=FilesystemRawSegmentRepository(),
+        picklist=SqlitePicklistRepository(),
     )
     if user["role"] == "admin":
         return AdminScope(user["username"], repos)
-    return SurgeonScope(user["username"], user["folder_slug"], repos)
+    return SurgeonScope(
+        user["username"],
+        user["folder_slug"],
+        repos,
+        specialty=user.get("specialty"),
+    )
 
 
 # ----- app + handlers -----

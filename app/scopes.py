@@ -3,19 +3,23 @@
 Three classes:
 
 - ``UserScope`` — abstract base declaring the full method surface from v18.
-- ``SurgeonScope(username, folder_slug, repos)`` — listings delegate to the
-  appropriate repo (segments via ``repos.segment``, manifest-derived
-  listings via ``repos.case``); case-scoped methods delegate ownership
-  checks to ``repos.case.case_belongs_to`` and raise
-  ``ScopeViolationError`` for unowned ids; admin-only methods
-  (resolve_audit_flag, reupload_metadata) always raise.
-- ``AdminScope(username, repos)`` — pass-through; listings return ``[]`` for
-  now (future specs add a repo-level ``list_all``-style method per kind and
-  call it here), targeted methods raise ``NotImplementedError`` (bodies land
-  alongside the specs consuming them).
+- ``SurgeonScope(username, folder_slug, repos, specialty)`` — listings
+  delegate to the appropriate repo (segments via ``repos.segment``,
+  manifest-derived listings via ``repos.case``); case-scoped methods
+  delegate ownership checks to ``repos.case.case_belongs_to`` and raise
+  ``ScopeViolationError`` for unowned ids; admin-only methods always raise.
+  ``specialty`` is the surgeon's specialty code (e.g. ``"colorectal"``);
+  picklist consumers pull it from the scope rather than re-doing a user
+  lookup.
+- ``AdminScope(username, repos)`` — pass-through; listings return ``[]``
+  until their respective tab spec lands; targeted methods raise
+  ``NotImplementedError``. ``specialty`` is always ``None``.
 
-Both subclasses take a ``Repos`` bundle so future repos (pipeline state,
-attention items, etc.) land in one place; constructors don't grow.
+Picklist access pattern (per Spec G): picklist values aren't surgeon-
+authorization-scoped (only specialty-scoped). Callers reach them as
+``scope.repos.picklist.list_active(field, scope.specialty)`` directly
+rather than via a scope method. ``repos`` is exposed as a public
+attribute for that reason.
 """
 
 from __future__ import annotations
@@ -31,6 +35,8 @@ class UserScope(ABC):
 
     role: str
     username: str
+    specialty: str | None
+    repos: Repos
 
     # ----- listing methods -----
 
@@ -82,16 +88,23 @@ class UserScope(ABC):
 class SurgeonScope(UserScope):
     role = "surgeon"
 
-    def __init__(self, username: str, folder_slug: str, repos: Repos):
+    def __init__(
+        self,
+        username: str,
+        folder_slug: str,
+        repos: Repos,
+        specialty: str | None = None,
+    ):
         self.username = username
         self.folder_slug = folder_slug
-        self._repos = repos
+        self.repos = repos
+        self.specialty = specialty
 
     def _scope_tag(self) -> str:
         return f"surgeon:{self.folder_slug}"
 
     def _require_case(self, case_id: str, action: str) -> None:
-        if not self._repos.case.case_belongs_to(case_id, self.folder_slug):
+        if not self.repos.case.case_belongs_to(case_id, self.folder_slug):
             raise ScopeViolationError(
                 resource=f"case:{case_id}",
                 action=action,
@@ -104,19 +117,19 @@ class SurgeonScope(UserScope):
     # when each tab spec adds a repo method.
 
     def list_raw_segments(self) -> list:
-        return self._repos.segment.list_raw_segments(self.folder_slug)
+        return self.repos.segment.list_raw_segments(self.folder_slug)
 
     def list_concatted_masters(self) -> list:
-        return self._repos.case.list_owned_by(self.folder_slug)
+        return self.repos.case.list_owned_by(self.folder_slug)
 
     def list_deid_videos(self) -> list:
-        return self._repos.case.list_owned_by(self.folder_slug)
+        return self.repos.case.list_owned_by(self.folder_slug)
 
     def read_manifest_rows(self) -> list:
-        return self._repos.case.list_owned_by(self.folder_slug)
+        return self.repos.case.list_owned_by(self.folder_slug)
 
     def list_audit_queue(self) -> list:
-        return self._repos.case.list_owned_by(self.folder_slug)
+        return self.repos.case.list_owned_by(self.folder_slug)
 
     # Case-scoped — repo decides in-scope; in-scope methods stub-raise.
 
@@ -155,10 +168,11 @@ class SurgeonScope(UserScope):
 
 class AdminScope(UserScope):
     role = "admin"
+    specialty = None
 
     def __init__(self, username: str, repos: Repos):
         self.username = username
-        self._repos = repos
+        self.repos = repos
 
     def _scope_tag(self) -> str:
         return "admin"

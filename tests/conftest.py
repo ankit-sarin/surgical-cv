@@ -25,6 +25,24 @@ _DEFAULT_CASE_MANIFEST_ROWS = (
 )
 
 
+_TEST_PICKLISTS = (
+    # field, value, display_label, sort_order, active, specialty
+    ("procedure", "Right hemicolectomy", "Right hemicolectomy", 10, 1, "colorectal"),
+    ("procedure", "Sigmoidectomy", "Sigmoidectomy", 20, 1, "colorectal"),
+    ("procedure", "Low anterior resection", "Low anterior resection", 30, 1, "colorectal"),
+    ("procedure", "Other", "Other", 999, 1, "colorectal"),
+    # An inactive procedure — must be filtered out by list_active.
+    ("procedure", "Deprecated proc", "Deprecated proc", 5, 0, "colorectal"),
+    # Universal approaches.
+    ("approach", "Open", "Open", 10, 1, None),
+    ("approach", "Laparoscopic", "Laparoscopic", 20, 1, None),
+    ("approach", "Robotic", "Robotic", 30, 1, None),
+    ("approach", "Hybrid", "Hybrid", 40, 1, None),
+    ("indication", "Colorectal cancer", "Colorectal cancer", 10, 1, "colorectal"),
+    ("case_year", "2026", "2026", 10, 1, None),
+)
+
+
 def _init_and_seed(db_path: Path) -> None:
     schema_sql = (PROJECT_ROOT / "app" / "db" / "schema.sql").read_text()
     conn = sqlite3.connect(db_path)
@@ -51,6 +69,14 @@ def _init_and_seed(db_path: Path) -> None:
             " created_at) VALUES (?, 'surgeon', ?, 'colorectal', 0, ?)",
             ("inactiveuser", "ghost", SEED_TS),
         )
+        for row in _TEST_PICKLISTS:
+            conn.execute(
+                "INSERT INTO picklist_values "
+                "(field, value, display_label, sort_order, active, specialty, "
+                " created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (*row, SEED_TS),
+            )
         conn.commit()
     finally:
         conn.close()
