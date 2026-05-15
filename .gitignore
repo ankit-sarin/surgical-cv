@@ -12,6 +12,8 @@ scripts/
 dist/
 build/
 .pytest_cache/
+.coverage
+.claude/
 primer.md
 bench/pull.pid
 bench/pull_log.txt
