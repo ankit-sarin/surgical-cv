@@ -20,12 +20,12 @@
 |---|---:|---:|---:|---:|
 | Redundancies | 0 | 0 | 4 | 4 |
 | Architectural inconsistencies | 0 | 2 | 1 | 3 |
-| Dead code | 0 | 0 | 1 | 1 |
+| Dead code | 0 | 0 | 2 | 2 |
 | Tech debt | (folded into Redundancies) | | | |
-| Security / PHI | 2 | 9 | 8 | 19 |
+| Security / PHI | 2 | 10 | 8 | 20 |
 | Test coverage | 0 | 0 | 1 | 1 |
 | Performance | 0 | 0 | 1 | 1 |
-| **Total** | **2** | **11** | **16** | **29** |
+| **Total** | **2** | **12** | **17** | **31** |
 
 Two P0s — both timeout gaps — are the hard blockers for the UCD-FIL-005 smoke. Without them, a slow Ollama load or a pathological video file silently consumes the worker's full 30-minute systemd `TimeoutStartSec` while every other surgeon's pending markers wait behind the single-worker lock.
 
@@ -44,6 +44,7 @@ Two P0s — both timeout gaps — are the hard blockers for the UCD-FIL-005 smok
 11. **F-011** · `SubmitError` reflects raw filesystem exception strings (incl. NAS paths) into the surgeon UI
 12. **F-012** · `PIPELINE_NAS_ROOT` and `RAW_VIDEO_ROOT` are two env vars for the same conceptual root — silent drift puts markers and the worker scan in different folders
 13. **F-013** · `CsvCaseRepository.submit_case` trusts `partial_row["surgeon"]` from its caller without re-checking against the authenticated scope
+14. **F-030** · `record_malformed` writes marker NAS path verbatim into `attention_items.details`
 
 ---
 
@@ -473,6 +474,24 @@ Two P0s — both timeout gaps — are the hard blockers for the UCD-FIL-005 smok
   Each `list_active` opens a new sqlite3 connection (`SqlitePicklistRepository:49-70`), runs one SELECT, closes.
 - **Why it matters:** ~four ms total on local SQLite — tolerable for v1. Will scale poorly when the admin app adds its own field set, or when picklist values grow with multi-specialty support. Module docstring already acknowledges no caching is intentional.
 - **Suggested disposition:** Document and accept. Revisit when (a) page-load latency becomes a complaint or (b) the picklist set crosses ~10 fields.
+
+### F-030 · record_malformed writes marker NAS path verbatim to attention_items.details
+
+- **Severity:** P1
+- **Category:** Security / PHI
+- **Location:** `app/worker/failures.py:177-183`
+- **Evidence:** The `record_malformed` path constructs `attention_items.details` from the marker's NAS file path string directly, with no scrubbing. Same shape of leak as the `hard_fail` path that F-006 addressed in the PHI cluster spec, but in a sibling code path that was not in F-006's scope.
+- **Why it matters:** `attention_items` rows are surgeon-visible via the Action Required tab. A malformed marker (corrupt JSON, missing required field, mtime collision) results in a row that includes the full NAS path of the marker file — operational metadata that should not surface to the surgeon UI. Adjacent to F-011 (SubmitError NAS path leak); natural pairing for a combined path-scrubbing spec.
+- **Suggested disposition:** Fix before surgeon onboarding. Pair with F-011 in a single bucket-2 path-scrubbing spec.
+
+### F-031 · httpx.TimeoutException in diagnose() except tuple is structurally unreachable
+
+- **Severity:** P2
+- **Category:** Dead code
+- **Location:** `pipeline/diagnostician.py` (the `diagnose()` exception tuple downstream of `_call_ollama`)
+- **Evidence:** After bucket 1's F-001 fix, `_call_ollama` catches `httpx.TimeoutException` internally and re-raises as `RuntimeError`. The outer `except (httpx.ConnectError, httpx.TimeoutException, ollama.ResponseError)` tuple's `TimeoutException` entry can no longer be reached.
+- **Why it matters:** Dead branch. Zero behavior impact. Adds reader friction and creates a future-debugging trap.
+- **Suggested disposition:** Cleanup pass. Remove `httpx.TimeoutException` from the outer tuple.
 
 ---
 
