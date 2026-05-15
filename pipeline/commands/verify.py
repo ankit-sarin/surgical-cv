@@ -35,6 +35,7 @@ from pipeline.diagnostician import (
 from pipeline.paths import NasPaths, resolve_paths
 from pipeline.schemas import (
     CASE_ID_RE,
+    CASE_ID_RE_STR,
     CASE_MANIFEST_COLUMNS,
     PIPELINE_STATE_COLUMNS,
     SURGEON_RE,
@@ -48,9 +49,11 @@ from pipeline.schemas import (
 
 # F-016 + F-017: case-id pattern, surgeon-name pattern, verification-notes
 # truncation length all imported from pipeline.schemas (single source).
-# _DEID_FILENAME_RE stays local — it's a different regex that happens to
-# embed the case-id form, not a duplicate definition.
-_DEID_FILENAME_RE = re.compile(r"^UCD-FIL-\d{3}_video\.mp4$")
+# _DEID_FILENAME_RE stays local — its full shape is verify-specific — but
+# the case-id portion is sourced from CASE_ID_RE_STR so a future tightening
+# of the case-id digit count (e.g., \d{3} → \d{4}) propagates automatically.
+_CASE_ID_BODY = CASE_ID_RE_STR.removeprefix("^").removesuffix("$")
+_DEID_FILENAME_RE = re.compile(rf"^{_CASE_ID_BODY}_video\.mp4$")
 _ENCODER_ALLOW_RE = re.compile(r"^(Lavf|Lavc|libx264|VideoHandler|SoundHandler|GPAC).*$")
 
 _NOTES_REASON_MAX = 160  # leaves room for "verified: " / "diagnostician: " prefix
