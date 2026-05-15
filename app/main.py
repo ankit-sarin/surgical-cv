@@ -46,7 +46,11 @@ from app.auth import (
 )
 from app.db.connection import connect, utcnow
 from app.exceptions import ScopeViolationError
-from app.repos.cases import CsvCaseRepository
+from app.repos import (
+    CsvCaseRepository,
+    FilesystemRawSegmentRepository,
+    Repos,
+)
 from app.scopes import AdminScope, SurgeonScope, UserScope
 from app.surgeon_app import build_surgeon_app
 
@@ -131,10 +135,13 @@ def _scope_tag_for(user: dict) -> str:
 def build_scope(
     user: dict = Depends(current_user_required),
 ) -> UserScope:
-    repo = CsvCaseRepository()
+    repos = Repos(
+        case=CsvCaseRepository(),
+        segment=FilesystemRawSegmentRepository(),
+    )
     if user["role"] == "admin":
-        return AdminScope(user["username"], repo)
-    return SurgeonScope(user["username"], user["folder_slug"], repo)
+        return AdminScope(user["username"], repos)
+    return SurgeonScope(user["username"], user["folder_slug"], repos)
 
 
 # ----- app + handlers -----

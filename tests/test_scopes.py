@@ -8,17 +8,30 @@ from __future__ import annotations
 import pytest
 
 from app.exceptions import ScopeViolationError
-from app.repos.cases import InMemoryCaseRepository
+from app.repos import (
+    InMemoryCaseRepository,
+    InMemoryRawSegmentRepository,
+    Repos,
+)
 from app.scopes import AdminScope, SurgeonScope, UserScope
 
 
-def _empty_repo() -> InMemoryCaseRepository:
-    return InMemoryCaseRepository()
+def _repos(case=None, segment=None) -> Repos:
+    return Repos(
+        case=case or InMemoryCaseRepository(),
+        segment=segment or InMemoryRawSegmentRepository(),
+    )
 
 
-def _sarin_repo(*case_ids: str) -> InMemoryCaseRepository:
-    return InMemoryCaseRepository(
-        {cid: {"surgeon": "sarin"} for cid in case_ids}
+def _empty_repo() -> Repos:
+    return _repos()
+
+
+def _sarin_repo(*case_ids: str) -> Repos:
+    return _repos(
+        case=InMemoryCaseRepository(
+            {cid: {"surgeon": "sarin"} for cid in case_ids}
+        )
     )
 
 
@@ -61,14 +74,13 @@ def test_userscope_is_abstract():
 @pytest.mark.parametrize(
     "method",
     [
-        "list_raw_segments",
         "list_concatted_masters",
         "list_deid_videos",
         "read_manifest_rows",
         "list_audit_queue",
     ],
 )
-def test_surgeon_listings_delegate_to_repo(method):
+def test_surgeon_case_listings_delegate_to_case_repo(method):
     s = SurgeonScope("asarin", "sarin", _sarin_repo("UCD-FIL-001", "UCD-FIL-002"))
     result = getattr(s, method)()
     assert sorted(result) == ["UCD-FIL-001", "UCD-FIL-002"]
@@ -77,22 +89,70 @@ def test_surgeon_listings_delegate_to_repo(method):
 @pytest.mark.parametrize(
     "method",
     [
-        "list_raw_segments",
         "list_concatted_masters",
         "list_deid_videos",
         "read_manifest_rows",
         "list_audit_queue",
     ],
 )
-def test_surgeon_listings_filter_by_folder_slug(method):
-    # Repo contains a mix; surgeon should only see their own.
-    repo = InMemoryCaseRepository({
-        "UCD-FIL-001": {"surgeon": "sarin"},
-        "UCD-FIL-099": {"surgeon": "miller"},
-    })
-    s = SurgeonScope("asarin", "sarin", repo)
-    result = getattr(s, method)()
-    assert result == ["UCD-FIL-001"]
+def test_surgeon_case_listings_filter_by_folder_slug(method):
+    repos = _repos(
+        case=InMemoryCaseRepository({
+            "UCD-FIL-001": {"surgeon": "sarin"},
+            "UCD-FIL-099": {"surgeon": "miller"},
+        })
+    )
+    s = SurgeonScope("asarin", "sarin", repos)
+    assert getattr(s, method)() == ["UCD-FIL-001"]
+
+
+def test_surgeon_list_raw_segments_delegates_to_segment_repo():
+    """list_raw_segments routes through the segment repo, not the case repo."""
+    from datetime import datetime, timezone
+
+    from app.repos import SegmentRecord
+
+    ts = datetime(2026, 1, 2, 8, 20, tzinfo=timezone.utc)
+    seg = SegmentRecord(
+        filename="capt0_20260102-082000.mp4",
+        timestamp=ts,
+        size_bytes=2_000_000_000,
+        path=__import__("pathlib").Path("/tmp/raw-sarin/capt0_20260102-082000.mp4"),
+    )
+    repos = _repos(
+        segment=InMemoryRawSegmentRepository({"sarin": [seg]})
+    )
+    s = SurgeonScope("asarin", "sarin", repos)
+    result = s.list_raw_segments()
+    assert result == [seg]
+
+
+def test_surgeon_list_raw_segments_filters_by_folder():
+    """Segment repo keyed by folder_slug; other folders' segments not seen."""
+    from datetime import datetime, timezone
+
+    from app.repos import SegmentRecord
+
+    ts = datetime(2026, 1, 2, 8, 20, tzinfo=timezone.utc)
+    sarin_seg = SegmentRecord(
+        filename="capt0_20260102-082000.mp4",
+        timestamp=ts,
+        size_bytes=1,
+        path=__import__("pathlib").Path("/tmp/raw-sarin/x.mp4"),
+    )
+    miller_seg = SegmentRecord(
+        filename="capt0_20260102-090000.mp4",
+        timestamp=ts,
+        size_bytes=1,
+        path=__import__("pathlib").Path("/tmp/raw-miller/x.mp4"),
+    )
+    repos = _repos(
+        segment=InMemoryRawSegmentRepository(
+            {"sarin": [sarin_seg], "miller": [miller_seg]}
+        )
+    )
+    s = SurgeonScope("asarin", "sarin", repos)
+    assert s.list_raw_segments() == [sarin_seg]
 
 
 @pytest.mark.parametrize(

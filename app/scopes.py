@@ -3,18 +3,19 @@
 Three classes:
 
 - ``UserScope`` — abstract base declaring the full method surface from v18.
-- ``SurgeonScope(username, folder_slug, repo)`` — listings delegate to
-  ``repo.list_owned_by(folder_slug)``; case-scoped methods delegate ownership
-  checks to ``repo.case_belongs_to(...)`` and raise ``ScopeViolationError``
-  for unowned ids; admin-only methods (resolve_audit_flag, reupload_metadata)
-  always raise ``ScopeViolationError``.
-- ``AdminScope(username, repo)`` — pass-through; listings return ``[]`` for
-  now (future specs add a repo-level ``list_all`` and call it here), targeted
-  methods raise ``NotImplementedError`` (bodies land alongside the Spec C+
-  tabs consuming them).
+- ``SurgeonScope(username, folder_slug, repos)`` — listings delegate to the
+  appropriate repo (segments via ``repos.segment``, manifest-derived
+  listings via ``repos.case``); case-scoped methods delegate ownership
+  checks to ``repos.case.case_belongs_to`` and raise
+  ``ScopeViolationError`` for unowned ids; admin-only methods
+  (resolve_audit_flag, reupload_metadata) always raise.
+- ``AdminScope(username, repos)`` — pass-through; listings return ``[]`` for
+  now (future specs add a repo-level ``list_all``-style method per kind and
+  call it here), targeted methods raise ``NotImplementedError`` (bodies land
+  alongside the specs consuming them).
 
-The repo arg is the canonical ``CaseRepository`` Protocol. In tests, pass
-``InMemoryCaseRepository({...})`` — no env var, no file I/O.
+Both subclasses take a ``Repos`` bundle so future repos (pipeline state,
+attention items, etc.) land in one place; constructors don't grow.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from app.exceptions import ScopeViolationError
-from app.repos.cases import CaseRepository
+from app.repos import Repos
 
 
 class UserScope(ABC):
@@ -31,7 +32,7 @@ class UserScope(ABC):
     role: str
     username: str
 
-    # ----- listing methods (return a list, possibly empty) -----
+    # ----- listing methods -----
 
     @abstractmethod
     def list_raw_segments(self) -> list:
@@ -81,43 +82,41 @@ class UserScope(ABC):
 class SurgeonScope(UserScope):
     role = "surgeon"
 
-    def __init__(
-        self, username: str, folder_slug: str, repo: CaseRepository
-    ):
+    def __init__(self, username: str, folder_slug: str, repos: Repos):
         self.username = username
         self.folder_slug = folder_slug
-        self._repo = repo
+        self._repos = repos
 
     def _scope_tag(self) -> str:
         return f"surgeon:{self.folder_slug}"
 
     def _require_case(self, case_id: str, action: str) -> None:
-        if not self._repo.case_belongs_to(case_id, self.folder_slug):
+        if not self._repos.case.case_belongs_to(case_id, self.folder_slug):
             raise ScopeViolationError(
                 resource=f"case:{case_id}",
                 action=action,
                 scope_at_time=self._scope_tag(),
             )
 
-    # All five listings return the same list of case_ids for now. Semantic
-    # differentiation (raw segments vs concat masters vs deid videos vs
-    # manifest rows vs audit queue) lands when the tab consuming each is
-    # specced — repo gains a method per kind, this scope calls it.
+    # Listings: raw-segments uses the segment repo (filesystem); the manifest-
+    # derived listings still go through the case repo. Semantic differentiation
+    # between concat-masters / deid-videos / manifest-rows / audit-queue lands
+    # when each tab spec adds a repo method.
 
     def list_raw_segments(self) -> list:
-        return self._repo.list_owned_by(self.folder_slug)
+        return self._repos.segment.list_raw_segments(self.folder_slug)
 
     def list_concatted_masters(self) -> list:
-        return self._repo.list_owned_by(self.folder_slug)
+        return self._repos.case.list_owned_by(self.folder_slug)
 
     def list_deid_videos(self) -> list:
-        return self._repo.list_owned_by(self.folder_slug)
+        return self._repos.case.list_owned_by(self.folder_slug)
 
     def read_manifest_rows(self) -> list:
-        return self._repo.list_owned_by(self.folder_slug)
+        return self._repos.case.list_owned_by(self.folder_slug)
 
     def list_audit_queue(self) -> list:
-        return self._repo.list_owned_by(self.folder_slug)
+        return self._repos.case.list_owned_by(self.folder_slug)
 
     # Case-scoped — repo decides in-scope; in-scope methods stub-raise.
 
@@ -157,15 +156,15 @@ class SurgeonScope(UserScope):
 class AdminScope(UserScope):
     role = "admin"
 
-    def __init__(self, username: str, repo: CaseRepository):
+    def __init__(self, username: str, repos: Repos):
         self.username = username
-        self._repo = repo
+        self._repos = repos
 
     def _scope_tag(self) -> str:
         return "admin"
 
-    # Listings: pass-through. Spec C stub returns []; future specs add a
-    # repo.list_all() and call it here.
+    # Listings: pass-through. Spec C stub returns []; future specs add the
+    # appropriate "list-all" repo methods and call them here.
 
     def list_raw_segments(self) -> list:
         return []
