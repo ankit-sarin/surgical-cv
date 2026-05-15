@@ -136,11 +136,11 @@ Notes-field commits emit a soft PHI nudge to stderr:
 
 ### Vocabularies
 
-Picklist values for `procedure_name` / `approach` / `indication` are loaded from `bench/vocabularies/*.json` at validation time. Override the directory with `PIPELINE_VOCAB_DIR` (used by hermetic tests).
+Picklist values for `procedure_name` / `approach` / `indication` are loaded from `bench/vocabularies/*.json` (approaches, indications, case_years) and `app/db/seeds/picklists/*.json` (procedures) at validation time. Override directories with `PIPELINE_VOCAB_DIR` and `PIPELINE_PICKLIST_DIR` respectively (used by hermetic tests).
 
 | Vocabulary | Items | Notes |
 |------|------|------|
-| procedures.json | 19 | Semantic clinical ordering, "Other" last. Includes TAMIS in the rectal-cancer cluster (LAR / APR / TAMIS). |
+| procedures.json | 24 | Semantic clinical ordering, "Other" last. Includes TAMIS in the rectal-cancer cluster (LAR / APR / TAMIS). |
 | approaches.json | 4 | Open / Laparoscopic / Robotic / Hybrid |
 | indications.json | 11 | "Other" last |
 | case_years.json | 16 | "2015"–"2030" inclusive (ascending). `case_year` is validated by regex `^\d{4}$` first, then allowlist membership. |

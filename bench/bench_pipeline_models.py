@@ -19,6 +19,8 @@ import httpx
 import jsonschema
 import ollama
 
+from pipeline.picklists import load_picklist_values
+
 # Set to 3 for production run. Start at 1 for dry-run validation.
 TRIALS = 1
 
@@ -80,13 +82,7 @@ SURGEON_SCHEMA_TEXT = """{
   }
 }"""
 
-PROCEDURES = ["Right hemicolectomy", "Left hemicolectomy", "Sigmoidectomy",
-              "Low anterior resection", "Abdominoperineal resection",
-              "Total proctocolectomy with IPAA", "Total abdominal colectomy",
-              "Transverse colectomy", "Ileocolic resection", "Ventral mesh rectopexy",
-              "Hartmann procedure", "Hartmann reversal", "Stoma creation",
-              "Stoma reversal", "Small bowel resection", "Diagnostic laparoscopy",
-              "Exploratory laparotomy", "Other"]
+PROCEDURES = load_picklist_values("procedure", specialty="colorectal")
 APPROACHES = ["Open", "Laparoscopic", "Robotic", "Hybrid"]
 INDICATIONS = ["Colorectal cancer", "Diverticulitis", "Crohn's disease",
                "Ulcerative colitis", "Rectal prolapse", "Benign polyp",
@@ -206,7 +202,7 @@ def load_json(path: Path):
 
 def load_vocabularies() -> dict:
     return {
-        "procedures": load_json(VOCAB_DIR / "procedures.json"),
+        "procedures": load_picklist_values("procedure", specialty="colorectal"),
         "approaches": load_json(VOCAB_DIR / "approaches.json"),
         "indications": load_json(VOCAB_DIR / "indications.json"),
     }

@@ -32,6 +32,7 @@ from pathlib import Path
 from pipeline.audit import log_audit
 from pipeline.csv_io import CsvTable, RowNotFoundError
 from pipeline.paths import NasPaths, resolve_paths
+from pipeline.picklists import PicklistError, load_picklist_values
 from pipeline.schemas import (
     CASE_MANIFEST_COLUMNS,
     PIPELINE_STATE_COLUMNS,
@@ -50,7 +51,7 @@ _HRULE = "─" * 14
 _FAILED_NOTES_TRUNC = 80
 
 _PICKLIST_FIELDS: dict[str, str] = {
-    "procedure_name": "procedures",
+    "procedure_name": "procedure",
     "approach": "approaches",
     "indication": "indications",
 }
@@ -74,6 +75,11 @@ def _vocab_dir() -> Path:
 
 
 def _load_vocab(name: str) -> list[str]:
+    if name == "procedure":
+        try:
+            return load_picklist_values("procedure", specialty="colorectal")
+        except PicklistError as e:
+            raise _InfraError(str(e)) from e
     path = _vocab_dir() / f"{name}.json"
     if not path.exists():
         raise _InfraError(f"vocab file missing: {path}")
@@ -138,8 +144,9 @@ def _validate_field(field: str, value: str) -> str | None:
         vocab_name = _PICKLIST_FIELDS[field]
         vocab = _load_vocab(vocab_name)
         if value not in vocab:
+            label = vocab_name if vocab_name.endswith("s") else vocab_name + "s"
             return (
-                f"{value!r} not in {vocab_name} vocabulary "
+                f"{value!r} not in {label} vocabulary "
                 f"({len(vocab)} allowed values)"
             )
         return None

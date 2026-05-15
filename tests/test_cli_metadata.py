@@ -122,10 +122,18 @@ def _read_audit_entries(paths: NasPaths) -> list[dict]:
     return [json.loads(line) for line in paths.audit_log.read_text().splitlines()]
 
 
-def _env(paths: NasPaths, vocab_dir: Path | None = None) -> dict:
+def _env(
+    paths: NasPaths,
+    vocab_dir: Path | None = None,
+    picklist_dir: Path | None = None,
+) -> dict:
     env = {**os.environ, "PIPELINE_NAS_ROOT": str(paths.root)}
     if vocab_dir is not None:
         env["PIPELINE_VOCAB_DIR"] = str(vocab_dir)
+        if picklist_dir is None:
+            picklist_dir = vocab_dir / "picklists"
+    if picklist_dir is not None:
+        env["PIPELINE_PICKLIST_DIR"] = str(picklist_dir)
     return env
 
 
@@ -169,14 +177,50 @@ _DEFAULT_INDICATIONS = ["Colorectal cancer", "Diverticulitis", "Other"]
 _DEFAULT_CASE_YEARS = ["2025", "2026", "2027"]
 
 
+def _seed_picklist(
+    picklist_dir: Path,
+    field: str,
+    specialty: str | None,
+    values: list[str] | str | None,
+) -> Path:
+    """Write a structured picklist file derived from a flat list of values.
+
+    None → omit the file (missing-file test).
+    str  → write the raw payload (malformed-JSON test).
+    list → wrap into the {field, specialty, values[]} structured format.
+    """
+    picklist_dir.mkdir(parents=True, exist_ok=True)
+    if values is None:
+        return picklist_dir
+    name = f"{field}_{specialty}.json" if specialty else f"{field}.json"
+    target = picklist_dir / name
+    if isinstance(values, str):
+        target.write_text(values)
+        return picklist_dir
+    structured = {
+        "field": field,
+        "specialty": specialty,
+        "values": [
+            {"value": v, "display_label": v, "sort_order": (i + 1) * 10}
+            for i, v in enumerate(values)
+        ],
+    }
+    target.write_text(json.dumps(structured))
+    return picklist_dir
+
+
 def _seed_full_vocab(vocab_dir: Path) -> Path:
-    return _seed_vocab(
+    _seed_vocab(
         vocab_dir,
         procedures=_DEFAULT_PROCEDURES,
         approaches=_DEFAULT_APPROACHES,
         indications=_DEFAULT_INDICATIONS,
         case_years=_DEFAULT_CASE_YEARS,
     )
+    _seed_picklist(
+        vocab_dir / "picklists", "procedure", "colorectal", _DEFAULT_PROCEDURES
+    )
+    return vocab_dir
 
 
 # ----- argparse / stub tests -----
@@ -483,15 +527,15 @@ def test_dry_run_notes_accepts_empty_string(tmp_path):
     _assert_no_mutation(paths, before)
 
 
-def test_dry_run_vocab_missing_returns_2(tmp_path):
+def test_dry_run_picklist_missing_returns_2(tmp_path):
     paths = _make_paths(tmp_path)
-    # Seed only two of three vocab files; procedures.json missing.
     vocab_dir = _seed_vocab(
         tmp_path / "vocab",
-        procedures=None,
         approaches=_DEFAULT_APPROACHES,
         indications=_DEFAULT_INDICATIONS,
     )
+    # PIPELINE_PICKLIST_DIR exists but procedure_colorectal.json omitted.
+    _seed_picklist(vocab_dir / "picklists", "procedure", "colorectal", None)
     _seed_manifest(paths, _manifest_row("UCD-FIL-001"))
     before = paths.manifest_csv.read_bytes()
 
@@ -506,18 +550,20 @@ def test_dry_run_vocab_missing_returns_2(tmp_path):
     assert result.returncode == 2
     err = result.stderr
     assert "infrastructure error" in err
-    assert "vocab file missing" in err
-    assert "procedures.json" in err
+    assert "missing" in err
+    assert "procedure_colorectal.json" in err
     _assert_no_mutation(paths, before)
 
 
-def test_dry_run_vocab_malformed_returns_2(tmp_path):
+def test_dry_run_picklist_malformed_returns_2(tmp_path):
     paths = _make_paths(tmp_path)
     vocab_dir = _seed_vocab(
         tmp_path / "vocab",
-        procedures="{not valid json",
         approaches=_DEFAULT_APPROACHES,
         indications=_DEFAULT_INDICATIONS,
+    )
+    _seed_picklist(
+        vocab_dir / "picklists", "procedure", "colorectal", "{not valid json"
     )
     _seed_manifest(paths, _manifest_row("UCD-FIL-001"))
     before = paths.manifest_csv.read_bytes()
@@ -534,7 +580,7 @@ def test_dry_run_vocab_malformed_returns_2(tmp_path):
     err = result.stderr
     assert "infrastructure error" in err
     assert "malformed" in err
-    assert "procedures.json" in err
+    assert "procedure_colorectal.json" in err
     _assert_no_mutation(paths, before)
 
 
@@ -772,14 +818,14 @@ def test_commit_bad_case_format_logs_format_failure(tmp_path):
     assert e["details"]["case_arg"] == "FOOBAR"
 
 
-def test_commit_vocab_missing_logs_infra_failure(tmp_path):
+def test_commit_picklist_missing_logs_infra_failure(tmp_path):
     paths = _make_paths(tmp_path)
     vocab_dir = _seed_vocab(
         tmp_path / "vocab",
-        procedures=None,
         approaches=_DEFAULT_APPROACHES,
         indications=_DEFAULT_INDICATIONS,
     )
+    _seed_picklist(vocab_dir / "picklists", "procedure", "colorectal", None)
     _seed_manifest(paths, _manifest_row("UCD-FIL-001"))
     before_csv = paths.manifest_csv.read_bytes()
 
@@ -802,7 +848,7 @@ def test_commit_vocab_missing_logs_infra_failure(tmp_path):
     assert e["outcome"] == "failure"
     assert e["case"] == "UCD-FIL-001"
     assert e["details"]["failure_kind"] == "infra"
-    assert "vocab file missing" in e["details"]["detail"]
+    assert "missing" in e["details"]["detail"]
 
 
 def test_commit_exception_inside_transaction_logs_exception_failure(

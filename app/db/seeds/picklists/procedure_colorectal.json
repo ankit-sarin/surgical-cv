@@ -1,0 +1,30 @@
+{
+  "field": "procedure",
+  "specialty": "colorectal",
+  "values": [
+    { "value": "Right hemicolectomy", "display_label": "Right hemicolectomy", "sort_order": 10 },
+    { "value": "Left hemicolectomy", "display_label": "Left hemicolectomy", "sort_order": 20 },
+    { "value": "Sigmoidectomy", "display_label": "Sigmoidectomy", "sort_order": 30 },
+    { "value": "Transverse colectomy", "display_label": "Transverse colectomy", "sort_order": 40 },
+    { "value": "Ileocolic resection", "display_label": "Ileocolic resection", "sort_order": 50 },
+    { "value": "Low anterior resection", "display_label": "Low anterior resection", "sort_order": 60 },
+    { "value": "Abdominoperineal resection", "display_label": "Abdominoperineal resection", "sort_order": 70 },
+    { "value": "TAMIS", "display_label": "TAMIS", "sort_order": 80 },
+    { "value": "taTME", "display_label": "taTME", "sort_order": 90 },
+    { "value": "Total proctocolectomy with IPAA", "display_label": "Total proctocolectomy with IPAA", "sort_order": 100 },
+    { "value": "Total abdominal colectomy with end ileostomy", "display_label": "Total abdominal colectomy with end ileostomy", "sort_order": 110 },
+    { "value": "Total abdominal colectomy with ileorectal anastomosis", "display_label": "Total abdominal colectomy with ileorectal anastomosis", "sort_order": 120 },
+    { "value": "Completion proctectomy with IPAA", "display_label": "Completion proctectomy with IPAA", "sort_order": 130 },
+    { "value": "Completion proctectomy with end ileostomy", "display_label": "Completion proctectomy with end ileostomy", "sort_order": 140 },
+    { "value": "Rectopexy with / without resection", "display_label": "Rectopexy with / without resection", "sort_order": 150 },
+    { "value": "Perineal proctosigmoidectomy", "display_label": "Perineal proctosigmoidectomy", "sort_order": 160 },
+    { "value": "Hartmann procedure", "display_label": "Hartmann procedure", "sort_order": 170 },
+    { "value": "Hartmann reversal", "display_label": "Hartmann reversal", "sort_order": 180 },
+    { "value": "Stoma creation", "display_label": "Stoma creation", "sort_order": 190 },
+    { "value": "Stoma closure", "display_label": "Stoma closure", "sort_order": 200 },
+    { "value": "Small bowel resection", "display_label": "Small bowel resection", "sort_order": 210 },
+    { "value": "Diagnostic laparoscopy", "display_label": "Diagnostic laparoscopy", "sort_order": 220 },
+    { "value": "Exploratory laparotomy", "display_label": "Exploratory laparotomy", "sort_order": 230 },
+    { "value": "Other", "display_label": "Other", "sort_order": 999 }
+  ]
+}
