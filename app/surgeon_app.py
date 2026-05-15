@@ -1,7 +1,7 @@
 """Surgeon Gradio Blocks app.
 
-Intake tab hosts Section 1 (segment selection — Spec E) and Section 2
-(procedure + approach — Spec G). Sections 3-5 land in future specs.
+Intake tab hosts Sections 1-4 (segments, procedure + approach, case context,
+notes). Section 5 (review + submit) lands in a future spec.
 My Cases and Action Required remain placeholders until their own specs.
 """
 
@@ -18,6 +18,7 @@ from app.auth import (
     identity_string_for_request,
     lookup_active_user,
 )
+from app.phi import scan_for_phi
 from app.repos import (
     CsvCaseRepository,
     FilesystemRawSegmentRepository,
@@ -432,6 +433,90 @@ def _build_intake_section3(
         ind_dd.change(lambda v: v, inputs=ind_dd, outputs=indication_state)
 
 
+# ----- Intake Section 4: notes (with soft PHI warning) -----
+
+
+_NOTES_PLACEHOLDER = (
+    "Optional. Avoid PHI (names, MRNs, SSNs, specific dates)."
+)
+_NOTES_SOFT_LIMIT = 500
+_NOTES_HARD_LIMIT = 1000
+
+# Co-located with scan_for_phi's categories. Humanized for the warning UI.
+# Privacy: these labels never accompany the matched substring — counts only.
+_PHI_CATEGORY_LABELS = {
+    "mrn": "long numbers",
+    "ssn": "SSN-like format",
+    "date": "dates",
+}
+
+
+def _normalize_notes(value: str | None) -> str | None:
+    """Trim; empty / whitespace-only collapses to ``None`` (case has no notes)."""
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _format_notes_counter(length: int) -> str:
+    """Neutral when under the 500-char soft limit, amber (warning glyph)
+    when 500-1000. The hard cap is always shown so the user knows the
+    ceiling Gradio is enforcing at input level."""
+    if length >= _NOTES_SOFT_LIMIT:
+        return f"⚠ {length} / {_NOTES_HARD_LIMIT} characters"
+    return f"{length} / {_NOTES_HARD_LIMIT} characters"
+
+
+def _format_phi_warning(text: str | None) -> str:
+    """Render the soft PHI warning Markdown. Returns the empty string when
+    no PHI patterns matched (caller surface stays blank in the clean case)."""
+    matches = scan_for_phi(text or "")
+    if not matches:
+        return ""
+    parts = []
+    for category, label in _PHI_CATEGORY_LABELS.items():
+        count = matches.get(category)
+        if count:
+            parts.append(f"{label} ({count})")
+    return (
+        f"⚠ Possible PHI detected: {', '.join(parts)}. "
+        "You'll be asked to confirm at submission."
+    )
+
+
+def _build_intake_section4(
+    parent: gr.Blocks,
+    notes_state,
+    notes_phi_warnings_state,
+):
+    gr.Markdown("### Section 4 — Notes")
+
+    # Static textbox (same focus-preservation pattern as Section 3's or_room):
+    # lives outside @gr.render so keystrokes don't rebuild the section.
+    notes_tb = gr.Textbox(
+        label="Case notes",
+        placeholder=_NOTES_PLACEHOLDER,
+        lines=6,
+        max_length=_NOTES_HARD_LIMIT,
+    )
+    counter_md = gr.Markdown(_format_notes_counter(0))
+    phi_warning_md = gr.Markdown("")
+
+    # All four wirings on .blur — single round-trip per defocus rather than
+    # one per keystroke.
+    notes_tb.blur(_normalize_notes, inputs=notes_tb, outputs=notes_state)
+    notes_tb.blur(
+        scan_for_phi, inputs=notes_tb, outputs=notes_phi_warnings_state
+    )
+    notes_tb.blur(_format_phi_warning, inputs=notes_tb, outputs=phi_warning_md)
+    notes_tb.blur(
+        lambda v: _format_notes_counter(len(v) if v else 0),
+        inputs=notes_tb,
+        outputs=counter_md,
+    )
+
+
 # ----- top-level Blocks build -----
 
 
@@ -456,6 +541,8 @@ def build_surgeon_app() -> gr.Blocks:
                 case_year_state = gr.State(None)
                 or_room_state = gr.State(None)
                 indication_state = gr.State(None)
+                notes_state = gr.State(None)
+                notes_phi_warnings_state = gr.State({})
 
                 _build_intake_section1(
                     blocks, segments_state, selected_state
@@ -474,6 +561,9 @@ def build_surgeon_app() -> gr.Blocks:
                     case_year_state,
                     or_room_state,
                     indication_state,
+                )
+                _build_intake_section4(
+                    blocks, notes_state, notes_phi_warnings_state
                 )
 
                 blocks.load(fetch_picklists, None, picklists_state)
