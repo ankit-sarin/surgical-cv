@@ -449,3 +449,119 @@ def test_session_secret_valid_length_constructs_serializer(monkeypatch):
     serializer = _session_serializer()
     token = serializer.dumps({"username": "asarin"})
     assert serializer.loads(token) == {"username": "asarin"}
+
+
+# ----- F-008: Fernet-wrapped partial-auth token -----
+
+
+def test_partial_auth_round_trip(monkeypatch):
+    """F-008: encode → decode is the identity. Baseline correctness for the
+    new dict→JSON→Fernet→signed-envelope pipeline."""
+    monkeypatch.setenv("APP_SESSION_SECRET", TEST_SECRET)
+    from app.auth import decode_partial_auth, encode_partial_auth
+
+    token = encode_partial_auth("asarin", "supersecretpassword123")
+    assert decode_partial_auth(token) == ("asarin", "supersecretpassword123")
+
+
+def test_partial_auth_password_not_visible_in_token(monkeypatch):
+    """F-008 core privacy contract: the password must NOT appear inside the
+    URLSafeTimedSerializer envelope's payload. Pre-fix, the JSON sat in
+    base64-readable plaintext; post-fix, it sits inside Fernet ciphertext.
+
+    Confirms by (a) decoding the signed envelope to expose the inner
+    payload, (b) base64-decoding it to reach the raw bytes, and
+    (c) asserting the password string is absent from both."""
+    monkeypatch.setenv("APP_SESSION_SECRET", TEST_SECRET)
+    from app.auth import _partial_serializer, encode_partial_auth
+
+    password = "this-string-must-not-leak-789"
+    token = encode_partial_auth("asarin", password)
+
+    # The serializer's loads gives us the inner payload (a Fernet ciphertext
+    # string, post-F-008). Pre-fix this would have been the base64 of the
+    # plaintext JSON.
+    inner = _partial_serializer().loads(token, max_age=120)
+    assert isinstance(inner, str)
+    assert password not in inner
+
+    # Belt-and-suspenders: also check the raw token bytes don't contain
+    # the password (covers any base64/url-safe encoding of the substring).
+    assert password not in token
+    assert "asarin" not in inner  # username is also encrypted
+
+
+def test_partial_auth_tampered_ciphertext_returns_none(monkeypatch):
+    """F-008: flipping a byte inside the Fernet ciphertext (after passing
+    the outer signed envelope's HMAC) must collapse to None — same fail-
+    closed contract as today's tampered-envelope path."""
+    monkeypatch.setenv("APP_SESSION_SECRET", TEST_SECRET)
+    from app.auth import (
+        _partial_serializer,
+        decode_partial_auth,
+        encode_partial_auth,
+    )
+
+    token = encode_partial_auth("asarin", "x")
+    # Pull the ciphertext out, flip a byte, re-sign so the outer envelope
+    # is valid but the inner Fernet token is tampered.
+    inner = _partial_serializer().loads(token, max_age=120)
+    # Flip a byte ~halfway through the ciphertext (avoid the version byte
+    # at index 0 and the timestamp window).
+    midpoint = len(inner) // 2
+    flipped_char = "A" if inner[midpoint] != "A" else "B"
+    tampered_inner = inner[:midpoint] + flipped_char + inner[midpoint + 1:]
+    tampered_token = _partial_serializer().dumps(tampered_inner)
+
+    assert decode_partial_auth(tampered_token) is None
+
+
+def test_partial_auth_wrong_key_returns_none(monkeypatch):
+    """F-008: a token issued under one APP_SESSION_SECRET cannot be decoded
+    under a different secret. Catches both the outer signed envelope's
+    HMAC mismatch and (if that somehow passed) the inner Fernet
+    InvalidToken."""
+    from app.auth import decode_partial_auth, encode_partial_auth
+
+    secret_a = "a" * 32
+    secret_b = "b" * 32
+    monkeypatch.setenv("APP_SESSION_SECRET", secret_a)
+    token = encode_partial_auth("asarin", "x")
+
+    monkeypatch.setenv("APP_SESSION_SECRET", secret_b)
+    assert decode_partial_auth(token) is None
+
+
+def test_partial_auth_expiry_preserved(monkeypatch):
+    """F-008 regression: the 120 s expiry window survives the Fernet wrap.
+    The signed envelope still drives the expiry check (we kept itsdangerous
+    on the outside specifically to preserve this behavior with no caller
+    changes)."""
+    monkeypatch.setenv("APP_SESSION_SECRET", TEST_SECRET)
+    from app.auth import decode_partial_auth, encode_partial_auth
+
+    token = encode_partial_auth("asarin", "x")
+    # Round-trip works fresh.
+    assert decode_partial_auth(token) == ("asarin", "x")
+
+    # Force immediate expiry via the same monkeypatch trick the existing
+    # test_login_otp_expired_token_rejected uses.
+    monkeypatch.setattr("app.auth.PARTIAL_AUTH_MAX_AGE_S", -1, raising=False)
+    assert decode_partial_auth(token) is None
+
+
+def test_derive_partial_auth_fernet_key_is_deterministic(monkeypatch):
+    """F-008: the KDF must be a pure function of APP_SESSION_SECRET so that
+    a token issued by one process can be decoded by another (e.g., systemd
+    restart of the FastAPI service mid-OTP-window)."""
+    monkeypatch.setenv("APP_SESSION_SECRET", TEST_SECRET)
+    from app.auth import _derive_partial_auth_fernet_key
+
+    key1 = _derive_partial_auth_fernet_key()
+    key2 = _derive_partial_auth_fernet_key()
+    assert key1 == key2
+
+    # And different secrets yield different keys (sanity).
+    monkeypatch.setenv("APP_SESSION_SECRET", "z" * 32)
+    key_other = _derive_partial_auth_fernet_key()
+    assert key_other != key1

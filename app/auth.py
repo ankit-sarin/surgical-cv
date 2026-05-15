@@ -30,8 +30,14 @@ Session cookie:
 
 Partial-auth token (between password and OTP):
     payload:   {"u": username, "p": password}
+    pipeline:  dict → JSON → Fernet-encrypt → URLSafeTimedSerializer.dumps
+               (F-008: the inner JSON sits inside Fernet ciphertext so the
+               password is not readable from a captured token; the signed
+               envelope provides the 120 s expiry)
     salt:      "partial-auth"
     expiry:    120 s
+    fernet key: SHA-256("partial-auth-fernet:" + APP_SESSION_SECRET),
+                base64url-encoded; derived lazily per call
 
 DSM endpoint URL: NAS_DSM_URL env var. ``verify=False`` is acceptable for the
 private-network link (DSM self-signed cert); cert pinning is a hardening
@@ -43,11 +49,15 @@ tests use monkeypatched httpx instead).
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import sqlite3
+from base64 import urlsafe_b64encode
 from typing import Literal
 
 import httpx
+from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Cookie, Depends, HTTPException, Request
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
@@ -64,6 +74,13 @@ PARTIAL_AUTH_MAX_AGE_S = 120
 # operator-side requirement; this constant enforces it at startup so a
 # misconfigured env var fails closed instead of silently weakening sessions.
 _MIN_SESSION_SECRET_LEN = 32
+
+# F-008: domain-separation prefix for the partial-auth Fernet key. Mixed into
+# the SHA-256 input so the Fernet key derived for partial-auth never collides
+# with any other key the same secret might derive in the future (session
+# cookie HMAC stays separate by virtue of itsdangerous's own salting; this
+# prefix keeps Fernet's slot equally exclusive).
+_PARTIAL_AUTH_FERNET_DOMAIN = b"partial-auth-fernet:"
 
 DSM_SUCCESS = "success"
 DSM_NEEDS_OTP = "needs_otp"
@@ -96,6 +113,28 @@ def _partial_serializer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(_load_session_secret(), salt="partial-auth")
 
 
+def _derive_partial_auth_fernet_key() -> bytes:
+    """F-008: Derive a Fernet key for the partial-auth payload from
+    APP_SESSION_SECRET via SHA-256 with a domain-separation prefix.
+
+    F-009 enforces ≥32-byte input entropy on the secret; SHA-256 over
+    ``domain || secret`` is a defensible single-purpose KDF for this use
+    without pulling ``cryptography.hazmat`` HKDF. The prefix
+    (``_PARTIAL_AUTH_FERNET_DOMAIN``) keeps this slot exclusive — any other
+    key derived from the same secret in the future must use a different
+    domain string."""
+    secret = _load_session_secret().encode()
+    digest = hashlib.sha256(_PARTIAL_AUTH_FERNET_DOMAIN + secret).digest()
+    return urlsafe_b64encode(digest)
+
+
+def _partial_auth_fernet() -> Fernet:
+    """Lazy Fernet construction so the crypto primitive isn't built at import
+    time (lets tests monkeypatch ``APP_SESSION_SECRET`` before any auth
+    surface is touched)."""
+    return Fernet(_derive_partial_auth_fernet_key())
+
+
 def encode_session(username: str) -> str:
     return _session_serializer().dumps({"username": username})
 
@@ -113,15 +152,42 @@ def decode_session(token: str | None) -> str | None:
 
 
 def encode_partial_auth(username: str, password: str) -> str:
-    return _partial_serializer().dumps({"u": username, "p": password})
+    """F-008: payload pipeline is dict → JSON → Fernet-encrypt → signed envelope.
+
+    The Fernet wrap means the password is not readable by anyone who captures
+    the token from browser devtools, an HTTPS proxy log, or a Cloudflare
+    tunnel intercept during the 120 s OTP window. The outer
+    ``URLSafeTimedSerializer`` provides the signing layer + the existing
+    expiry mechanism (Fernet has its own TTL but reusing the serializer's
+    expiry keeps the change minimal-surface — see spec)."""
+    payload = json.dumps({"u": username, "p": password}).encode()
+    ciphertext = _partial_auth_fernet().encrypt(payload).decode()
+    return _partial_serializer().dumps(ciphertext)
 
 
 def decode_partial_auth(token: str | None) -> tuple[str, str] | None:
+    """Reverse the encode pipeline: signed envelope → ciphertext → Fernet-
+    decrypt → JSON → ``(u, p)``. Any failure at any layer (bad signature,
+    expired envelope, tampered/wrong-key ciphertext, unparseable payload,
+    shape mismatch) collapses to ``None`` — same fail-closed contract as the
+    pre-F-008 implementation, so call sites in ``app/main.py`` don't change."""
     if not token:
         return None
     try:
-        data = _partial_serializer().loads(token, max_age=PARTIAL_AUTH_MAX_AGE_S)
+        ciphertext = _partial_serializer().loads(
+            token, max_age=PARTIAL_AUTH_MAX_AGE_S
+        )
     except (BadSignature, SignatureExpired):
+        return None
+    if not isinstance(ciphertext, str):
+        return None
+    try:
+        payload = _partial_auth_fernet().decrypt(ciphertext.encode())
+    except InvalidToken:
+        return None
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
         return None
     if not isinstance(data, dict) or "u" not in data or "p" not in data:
         return None
