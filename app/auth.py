@@ -179,13 +179,14 @@ def _mock_dsm(
 
 
 def lookup_active_user(username: str) -> dict | None:
-    """Return {username, role, folder_slug, specialty} for an ACTIVE user, or
-    ``None`` if missing / inactive. Same return shape collapses both into the
-    same caller-side reject path — no enumeration leak."""
+    """Return {username, role, folder_slug, specialty, display_name} for an
+    ACTIVE user, or ``None`` if missing / inactive. Same return shape
+    collapses both into the same caller-side reject path — no enumeration
+    leak."""
     conn = connect()
     try:
         row = conn.execute(
-            "SELECT username, role, folder_slug, specialty, active "
+            "SELECT username, role, folder_slug, specialty, display_name, active "
             "FROM users WHERE username = ?",
             (username,),
         ).fetchone()
@@ -198,6 +199,7 @@ def lookup_active_user(username: str) -> dict | None:
         "role": row["role"],
         "folder_slug": row["folder_slug"],
         "specialty": row["specialty"],
+        "display_name": row["display_name"],
     }
 
 
@@ -256,3 +258,34 @@ def username_from_request(request: Request) -> str | None:
     handler to attribute a scope_violation_log row without re-injecting the
     full ``current_user`` dependency chain."""
     return decode_session(request.cookies.get(SESSION_COOKIE_NAME))
+
+
+# ----- identity string for Gradio mounts -----
+
+
+_GENERIC_IDENTITY = "Signed in."
+
+
+def identity_string_for_request(request) -> str:
+    """Render the "Signed in as ..." line for Gradio mounts.
+
+    Reads ``app_session`` from the request cookies, decodes it, looks up the
+    active user, and returns a formatted identity string. Any failure
+    (missing/bad cookie, missing user, inactive user, ``None`` request)
+    collapses to the generic fallback — the role-prefix auth already gated
+    the request, so this function is informational only and must never crash
+    the page render.
+    """
+    if request is None:
+        return _GENERIC_IDENTITY
+    cookies = getattr(request, "cookies", None) or {}
+    username = decode_session(cookies.get(SESSION_COOKIE_NAME))
+    if not username:
+        return _GENERIC_IDENTITY
+    user = lookup_active_user(username)
+    if user is None:
+        return _GENERIC_IDENTITY
+    label = user.get("display_name") or user["username"]
+    folder = user.get("folder_slug") or "admin"
+    specialty = user.get("specialty") or "all specialties"
+    return f"Signed in as {label} ({folder}, {specialty})"

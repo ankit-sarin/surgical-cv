@@ -15,6 +15,15 @@ TEST_SECRET = "test-secret-32-bytes-or-longer-please-thank-you"
 TEST_DSM_URL = "https://dsm.test.invalid/webapi/auth.cgi"
 SEED_TS = "2026-05-15T00:00:00+00:00"
 
+_CASE_MANIFEST_HEADER = (
+    "ucd_fil_id,surgeon,case_year,or_room,procedure_name,approach,indication,notes"
+)
+_DEFAULT_CASE_MANIFEST_ROWS = (
+    "UCD-FIL-001,sarin,2026,OR 4,Low anterior resection,Robotic,Colorectal cancer,",
+    "UCD-FIL-002,sarin,2026,OR 4,Right hemicolectomy,Robotic,Colorectal cancer,",
+    "UCD-FIL-099,miller,2026,OR 1,Sigmoidectomy,Open,Colorectal cancer,",
+)
+
 
 def _init_and_seed(db_path: Path) -> None:
     schema_sql = (PROJECT_ROOT / "app" / "db" / "schema.sql").read_text()
@@ -50,13 +59,24 @@ def _init_and_seed(db_path: Path) -> None:
 @pytest.fixture
 def app_env(tmp_path, monkeypatch):
     """Per-test env: APP_DB_PATH at a fresh tmp DB, session secret set,
-    dev-mode on, MOCK_AUTH cleared, NAS_DSM_URL fixed."""
+    dev-mode on, MOCK_AUTH cleared, NAS_DSM_URL fixed, CASE_MANIFEST_PATH
+    pointing at a fresh tmp CSV with 3 cases (2 sarin, 1 miller)."""
     db = tmp_path / "test.db"
     _init_and_seed(db)
+
+    manifest = tmp_path / "case_manifest.csv"
+    manifest.write_text(
+        _CASE_MANIFEST_HEADER
+        + "\n"
+        + "\n".join(_DEFAULT_CASE_MANIFEST_ROWS)
+        + "\n"
+    )
+
     monkeypatch.setenv("APP_DB_PATH", str(db))
     monkeypatch.setenv("APP_SESSION_SECRET", TEST_SECRET)
     monkeypatch.setenv("APP_DEV_MODE", "1")
     monkeypatch.setenv("NAS_DSM_URL", TEST_DSM_URL)
+    monkeypatch.setenv("CASE_MANIFEST_PATH", str(manifest))
     monkeypatch.delenv("MOCK_AUTH", raising=False)
     return db
 

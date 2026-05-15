@@ -3,32 +3,26 @@
 Three classes:
 
 - ``UserScope`` — abstract base declaring the full method surface from v18.
-  Listing methods return a list; targeted methods take a case_id / flag_id.
-- ``SurgeonScope(username, folder_slug)`` — listings filter by folder_slug;
-  case-scoped methods raise ``ScopeViolationError`` for out-of-scope ids;
-  admin-only methods (resolve_audit_flag, reupload_metadata) always raise
-  ``ScopeViolationError``.
-- ``AdminScope(username)`` — pass-through; listings see everything.
+- ``SurgeonScope(username, folder_slug, repo)`` — listings delegate to
+  ``repo.list_owned_by(folder_slug)``; case-scoped methods delegate ownership
+  checks to ``repo.case_belongs_to(...)`` and raise ``ScopeViolationError``
+  for unowned ids; admin-only methods (resolve_audit_flag, reupload_metadata)
+  always raise ``ScopeViolationError``.
+- ``AdminScope(username, repo)`` — pass-through; listings return ``[]`` for
+  now (future specs add a repo-level ``list_all`` and call it here), targeted
+  methods raise ``NotImplementedError`` (bodies land alongside the Spec C+
+  tabs consuming them).
 
-In Spec B the bodies are stubs: list_* returns ``[]``, in-scope targeted
-methods raise ``NotImplementedError``. Real implementations land when the
-Spec C tabs that consume them are wired.
-
-Scope construction:
-
-    SurgeonScope("asarin", "sarin", owned_case_ids={"UCD-FIL-001"})
-    AdminScope("ankitsarin")
-
-``owned_case_ids`` is a stub seam for the case-ownership check. Spec C
-replaces it with a DB lookup against case_manifest.csv / pipeline_state.csv.
+The repo arg is the canonical ``CaseRepository`` Protocol. In tests, pass
+``InMemoryCaseRepository({...})`` — no env var, no file I/O.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Iterable
 
 from app.exceptions import ScopeViolationError
+from app.repos.cases import CaseRepository
 
 
 class UserScope(ABC):
@@ -88,58 +82,62 @@ class SurgeonScope(UserScope):
     role = "surgeon"
 
     def __init__(
-        self,
-        username: str,
-        folder_slug: str,
-        owned_case_ids: Iterable[str] | None = None,
+        self, username: str, folder_slug: str, repo: CaseRepository
     ):
         self.username = username
         self.folder_slug = folder_slug
-        self._owned: set[str] = set(owned_case_ids or ())
+        self._repo = repo
 
     def _scope_tag(self) -> str:
         return f"surgeon:{self.folder_slug}"
 
     def _require_case(self, case_id: str, action: str) -> None:
-        if case_id not in self._owned:
+        if not self._repo.case_belongs_to(case_id, self.folder_slug):
             raise ScopeViolationError(
                 resource=f"case:{case_id}",
                 action=action,
                 scope_at_time=self._scope_tag(),
             )
 
-    # listings — stubs in Spec B; Spec C wires DB-backed filters by folder_slug.
+    # All five listings return the same list of case_ids for now. Semantic
+    # differentiation (raw segments vs concat masters vs deid videos vs
+    # manifest rows vs audit queue) lands when the tab consuming each is
+    # specced — repo gains a method per kind, this scope calls it.
 
     def list_raw_segments(self) -> list:
-        return []
+        return self._repo.list_owned_by(self.folder_slug)
 
     def list_concatted_masters(self) -> list:
-        return []
+        return self._repo.list_owned_by(self.folder_slug)
 
     def list_deid_videos(self) -> list:
-        return []
+        return self._repo.list_owned_by(self.folder_slug)
 
     def read_manifest_rows(self) -> list:
-        return []
+        return self._repo.list_owned_by(self.folder_slug)
 
     def list_audit_queue(self) -> list:
-        return []
+        return self._repo.list_owned_by(self.folder_slug)
 
-    # targeted — scope check, then NotImplementedError stub for Spec C.
+    # Case-scoped — repo decides in-scope; in-scope methods stub-raise.
 
     def read_case(self, case_id: str):
         self._require_case(case_id, "read_case")
-        raise NotImplementedError("read_case body lands in Spec C")
+        raise NotImplementedError("read_case body lands in a future spec")
 
     def write_case_metadata(self, case_id: str, **kwargs):
         self._require_case(case_id, "write_case_metadata")
-        raise NotImplementedError("write_case_metadata body lands in Spec C")
+        raise NotImplementedError(
+            "write_case_metadata body lands in a future spec"
+        )
 
     def trigger_pipeline(self, case_id: str, stage: str):
         self._require_case(case_id, "trigger_pipeline")
-        raise NotImplementedError("trigger_pipeline body lands in Spec C")
+        raise NotImplementedError(
+            "trigger_pipeline body lands in a future spec"
+        )
 
-    # admin-only — surgeons cannot reach these, ever.
+    # Admin-only — surgeons cannot reach these, ever.
 
     def resolve_audit_flag(self, flag_id: int, **kwargs):
         raise ScopeViolationError(
@@ -159,13 +157,15 @@ class SurgeonScope(UserScope):
 class AdminScope(UserScope):
     role = "admin"
 
-    def __init__(self, username: str):
+    def __init__(self, username: str, repo: CaseRepository):
         self.username = username
+        self._repo = repo
 
     def _scope_tag(self) -> str:
         return "admin"
 
-    # listings — pass-through. Spec C wires unfiltered DB reads.
+    # Listings: pass-through. Spec C stub returns []; future specs add a
+    # repo.list_all() and call it here.
 
     def list_raw_segments(self) -> list:
         return []
@@ -182,19 +182,25 @@ class AdminScope(UserScope):
     def list_audit_queue(self) -> list:
         return []
 
-    # All targeted operations available to admin — Spec C wires the bodies.
-
     def read_case(self, case_id: str):
-        raise NotImplementedError("read_case body lands in Spec C")
+        raise NotImplementedError("read_case body lands in a future spec")
 
     def write_case_metadata(self, case_id: str, **kwargs):
-        raise NotImplementedError("write_case_metadata body lands in Spec C")
+        raise NotImplementedError(
+            "write_case_metadata body lands in a future spec"
+        )
 
     def trigger_pipeline(self, case_id: str, stage: str):
-        raise NotImplementedError("trigger_pipeline body lands in Spec C")
+        raise NotImplementedError(
+            "trigger_pipeline body lands in a future spec"
+        )
 
     def resolve_audit_flag(self, flag_id: int, **kwargs):
-        raise NotImplementedError("resolve_audit_flag body lands in Spec C")
+        raise NotImplementedError(
+            "resolve_audit_flag body lands in a future spec"
+        )
 
     def reupload_metadata(self, case_id: str, **kwargs):
-        raise NotImplementedError("reupload_metadata body lands in Spec C")
+        raise NotImplementedError(
+            "reupload_metadata body lands in a future spec"
+        )

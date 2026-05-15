@@ -1,4 +1,5 @@
-"""FastAPI application — login, role-based routing, scope-violation handler.
+"""FastAPI application — login, role-based routing, scope-violation handler,
+Gradio mounts at /app (surgeon) and /admin (admin).
 
 Routes:
 
@@ -8,23 +9,27 @@ Routes:
     POST /login/otp              role-agnostic (partial-auth token gate)
     GET  /logout                 role-agnostic
     GET  /                       redirects to /app or /admin by role
-    GET  /app                    surgeon-only (placeholder; Spec C mounts Gradio)
-    GET  /admin                  admin-only (placeholder; Spec C mounts Gradio)
+    /app/*                       surgeon-only Gradio mount
+    /admin/*                     admin-only Gradio mount
 
-Role enforcement lives at the prefix-level via ``Depends(require_role(...))``
-on the surgeon / admin routers. Mismatch raises ``ScopeViolationError`` which
-the central handler converts into a generic 403 + one ``scope_violation_log``
-insert (same path as a SurgeonScope targeted method raising the same error
-deep inside the call stack).
+Role enforcement for the Gradio mounts lives in ``_gradio_auth_dep(role)``,
+passed to ``gr.mount_gradio_app(auth_dependency=...)``. Mismatch → inline
+violation-log write + ``HTTPException(403)``. We log + raise inline rather
+than letting the central ``ScopeViolationError`` handler do it because Gradio
+mounts as a separate FastAPI sub-app whose exception handlers don't share the
+parent's registry — the central handler still catches direct
+``ScopeViolationError``s from non-Gradio code paths (e.g.
+``SurgeonScope.read_case`` reached via ``build_scope``).
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Request
+import gradio as gr
+from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
+from app.admin_app import build_admin_app
 from app.auth import (
-    DSM_INVALID,
     DSM_NEEDS_OTP,
     DSM_SUCCESS,
     SESSION_COOKIE_NAME,
@@ -33,6 +38,7 @@ from app.auth import (
     current_user,
     current_user_required,
     decode_partial_auth,
+    decode_session,
     encode_partial_auth,
     lookup_active_user,
     set_session_cookie,
@@ -40,7 +46,9 @@ from app.auth import (
 )
 from app.db.connection import connect, utcnow
 from app.exceptions import ScopeViolationError
+from app.repos.cases import CsvCaseRepository
 from app.scopes import AdminScope, SurgeonScope, UserScope
+from app.surgeon_app import build_surgeon_app
 
 
 # ----- HTML helpers (intentionally minimal — no template engine) -----
@@ -111,35 +119,22 @@ def _log_violation(
         conn.close()
 
 
-# ----- role-prefix dependency -----
-
-
-def require_role(expected_role: str):
-    """Return a FastAPI dependency that enforces ``user.role == expected_role``.
-    On mismatch, raises ``ScopeViolationError`` (caught by the central handler
-    which writes one violation-log row and returns a generic 403)."""
-
-    def dep(
-        request: Request, user: dict = Depends(current_user_required)
-    ) -> dict:
-        if user["role"] != expected_role:
-            scope_tag = user["role"]
-            if user["role"] == "surgeon" and user.get("folder_slug"):
-                scope_tag = f"surgeon:{user['folder_slug']}"
-            raise ScopeViolationError(
-                resource=request.url.path,
-                action=request.method,
-                scope_at_time=scope_tag,
-            )
-        return user
-
-    return dep
-
-
-def build_scope(user: dict = Depends(current_user_required)) -> UserScope:
+def _scope_tag_for(user: dict) -> str:
     if user["role"] == "admin":
-        return AdminScope(user["username"])
-    return SurgeonScope(user["username"], user["folder_slug"])
+        return "admin"
+    return f"surgeon:{user.get('folder_slug') or ''}"
+
+
+# ----- scope dependency (used by non-Gradio routes / test integration) -----
+
+
+def build_scope(
+    user: dict = Depends(current_user_required),
+) -> UserScope:
+    repo = CsvCaseRepository()
+    if user["role"] == "admin":
+        return AdminScope(user["username"], repo)
+    return SurgeonScope(user["username"], user["folder_slug"], repo)
 
 
 # ----- app + handlers -----
@@ -192,7 +187,6 @@ async def login_submit(
 
     user = lookup_active_user(username)
     if user is None:
-        # Fail-closed: same generic error path as a real DSM rejection.
         return HTMLResponse(
             _render_login(error=_GENERIC_LOGIN_ERROR), status_code=401
         )
@@ -246,38 +240,51 @@ async def root(user: dict | None = Depends(current_user)) -> Response:
     return RedirectResponse(target, status_code=303)
 
 
-# ----- role-prefix routers -----
+# ----- Gradio mounts (role-enforced via auth_dependency) -----
 
 
-surgeon_router = APIRouter(
-    prefix="/app", dependencies=[Depends(require_role("surgeon"))]
+def _gradio_auth_dep(expected_role: str):
+    """Return a callable suitable for ``mount_gradio_app(auth_dependency=...)``.
+
+    On success returns the username (Gradio stashes it on request state). On
+    missing / invalid / inactive session: raises 401. On role mismatch: writes
+    one ``scope_violation_log`` row inline and raises 403. Inline logging
+    rather than via the central ``ScopeViolationError`` handler because the
+    Gradio mount is a sub-app whose exception-handler registry is independent
+    of the parent app's.
+    """
+
+    def dep(request: Request) -> str:
+        cookie = request.cookies.get(SESSION_COOKIE_NAME)
+        username = decode_session(cookie)
+        if not username:
+            raise HTTPException(status_code=401, detail="authentication required")
+        user = lookup_active_user(username)
+        if user is None:
+            raise HTTPException(status_code=401, detail="authentication required")
+        if user["role"] != expected_role:
+            _log_violation(
+                username=username,
+                resource=request.url.path,
+                action=request.method,
+                scope_at_time=_scope_tag_for(user),
+                user_agent=request.headers.get("user-agent"),
+            )
+            raise HTTPException(status_code=403, detail="Forbidden")
+        return username
+
+    return dep
+
+
+gr.mount_gradio_app(
+    app,
+    build_surgeon_app(),
+    path="/app",
+    auth_dependency=_gradio_auth_dep("surgeon"),
 )
-
-
-@surgeon_router.get("", response_class=HTMLResponse)
-async def surgeon_home(scope: UserScope = Depends(build_scope)) -> str:
-    # Placeholder — Spec C will mount the surgeon Gradio Blocks at this prefix.
-    return (
-        "<!doctype html><html><body>"
-        f"<h1>Surgeon Home</h1><p>Welcome, {scope.username}.</p>"
-        "</body></html>"
-    )
-
-
-admin_router = APIRouter(
-    prefix="/admin", dependencies=[Depends(require_role("admin"))]
+gr.mount_gradio_app(
+    app,
+    build_admin_app(),
+    path="/admin",
+    auth_dependency=_gradio_auth_dep("admin"),
 )
-
-
-@admin_router.get("", response_class=HTMLResponse)
-async def admin_home(scope: UserScope = Depends(build_scope)) -> str:
-    # Placeholder — Spec C will mount the admin Gradio Blocks at this prefix.
-    return (
-        "<!doctype html><html><body>"
-        f"<h1>Admin Home</h1><p>Welcome, {scope.username}.</p>"
-        "</body></html>"
-    )
-
-
-app.include_router(surgeon_router)
-app.include_router(admin_router)
