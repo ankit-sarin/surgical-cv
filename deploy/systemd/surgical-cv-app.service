@@ -1,0 +1,16 @@
+[Unit]
+Description=Surgical CV - FastAPI + Gradio surgeon intake and admin dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=ankitsarin
+WorkingDirectory=/home/ankitsarin/projects/surgical-cv
+EnvironmentFile=/home/ankitsarin/projects/surgical-cv/.env
+ExecStart=/home/ankitsarin/projects/surgical-cv/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 7865
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
