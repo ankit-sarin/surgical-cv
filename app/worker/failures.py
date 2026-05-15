@@ -34,8 +34,17 @@ TYPE_MALFORMED_MARKER = "malformed_marker"
 
 def ensure_system_worker_user() -> None:
     """Idempotent upsert of the system_worker admin row. Allows attention_items
-    writes to satisfy the ``created_by`` FK without a manual seed step."""
-    with connect() as conn:
+    writes to satisfy the ``created_by`` FK without a manual seed step.
+
+    F-010: explicit ``try/finally: conn.close()`` (matches the pattern in
+    ``app/auth.py:lookup_active_user`` and ``app/main.py:_log_violation``).
+    ``with connect() as conn`` would commit/rollback the transaction but NOT
+    close the connection — sqlite3.Connection.__exit__ only handles the
+    transaction lifecycle, not the FD lifecycle. Under ``--daemon`` mode the
+    leak compounds per iteration; under ``--once`` the kernel reclaims FDs at
+    process exit but we close explicitly anyway for symmetry across modes."""
+    conn = connect()
+    try:
         existing = conn.execute(
             "SELECT username FROM users WHERE username = ?",
             (SYSTEM_WORKER_USERNAME,),
@@ -48,13 +57,16 @@ def ensure_system_worker_user() -> None:
             (SYSTEM_WORKER_USERNAME, utcnow()),
         )
         conn.commit()
+    finally:
+        conn.close()
 
 
 def _lookup_username_for_slug(folder_slug: str) -> str:
     """Map a surgeon folder_slug → users.username (active surgeon row).
     Returns ``SYSTEM_WORKER_USERNAME`` if no match (so attention_items still
     have a valid FK; details carry the slug for triage)."""
-    with connect() as conn:
+    conn = connect()
+    try:
         row = conn.execute(
             "SELECT username FROM users WHERE folder_slug = ? "
             "AND role = 'surgeon' AND active = 1 LIMIT 1",
@@ -63,6 +75,8 @@ def _lookup_username_for_slug(folder_slug: str) -> str:
         if row is None:
             return SYSTEM_WORKER_USERNAME
         return row["username"]
+    finally:
+        conn.close()
 
 
 def _ensure_subdir(parent: Path, name: str) -> Path:
@@ -98,7 +112,8 @@ def write_attention_item(
     details: str,
 ) -> int:
     """Insert one attention_items row. Returns the new row id."""
-    with connect() as conn:
+    conn = connect()
+    try:
         cursor = conn.execute(
             "INSERT INTO attention_items "
             "(type, case_id, affected_user, severity, details, "
@@ -116,6 +131,8 @@ def write_attention_item(
         )
         conn.commit()
         return cursor.lastrowid
+    finally:
+        conn.close()
 
 
 def record_dispatch_outcome(marker: Marker, outcome: DispatchOutcome) -> None:

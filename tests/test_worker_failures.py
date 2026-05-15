@@ -364,3 +364,112 @@ def test_dispatch_summary_caps_at_200_chars(tmp_path, app_env):
     long_line = "x" * 500
     summary = _summarize_stderr(long_line)
     assert len(summary) <= 200
+
+
+# ----- F-010: connection lifecycle (close after every call) -----
+#
+# sqlite3.Connection.__exit__ commits/rolls back the transaction but does
+# NOT close the connection — three callers in app/worker/failures.py
+# previously leaked one FD per call. Under --once mode this is invisible
+# (process exits, kernel reclaims), but under --daemon mode the leak
+# compounds per iteration. These tests use a wrapper around the real
+# connect() that records close() calls so we can assert the lifecycle
+# without faking the SQL surface.
+
+
+class _CloseTrackingConn:
+    """Wraps a real sqlite3.Connection and counts close() invocations.
+    Delegates everything else so the tests still exercise the real SQL."""
+
+    def __init__(self, real_conn):
+        self._real = real_conn
+        self.close_calls = 0
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def close(self):
+        self.close_calls += 1
+        self._real.close()
+
+
+def _patch_tracking_connect(monkeypatch):
+    """Patch app.worker.failures.connect with a wrapper that returns a
+    _CloseTrackingConn over the real connection. Returns a list that the
+    test can inspect to find the most-recent tracker."""
+    from app.worker import failures as failures_mod
+
+    real_connect = failures_mod.connect
+    trackers: list[_CloseTrackingConn] = []
+
+    def fake_connect():
+        wrapped = _CloseTrackingConn(real_connect())
+        trackers.append(wrapped)
+        return wrapped
+
+    monkeypatch.setattr(failures_mod, "connect", fake_connect)
+    return trackers
+
+
+def test_ensure_system_worker_user_closes_connection(app_env, monkeypatch):
+    """F-010: ensure_system_worker_user must close its connection on both
+    branches — when the row already exists (early return) and when it has
+    to insert. This test covers both via two consecutive calls."""
+    trackers = _patch_tracking_connect(monkeypatch)
+
+    # First call: row does not exist → INSERT path.
+    ensure_system_worker_user()
+    assert len(trackers) == 1
+    assert trackers[0].close_calls == 1, (
+        "INSERT branch must close the connection"
+    )
+
+    # Second call: row already exists → early-return branch.
+    ensure_system_worker_user()
+    assert len(trackers) == 2
+    assert trackers[1].close_calls == 1, (
+        "early-return branch must close the connection"
+    )
+
+
+def test_lookup_username_for_slug_closes_connection(app_env, monkeypatch):
+    """F-010: read-only path also leaks if not explicitly closed. Cover
+    both the match branch (asarin → sarin folder_slug, seeded by app_env)
+    and the no-match branch (unknown slug → fallback to system_worker)."""
+    from app.worker.failures import _lookup_username_for_slug
+
+    ensure_system_worker_user()
+    trackers = _patch_tracking_connect(monkeypatch)
+
+    # Match branch.
+    result = _lookup_username_for_slug("sarin")
+    assert result == "asarin"
+    assert len(trackers) == 1
+    assert trackers[0].close_calls == 1
+
+    # No-match branch.
+    result = _lookup_username_for_slug("nobody")
+    assert result == SYSTEM_WORKER_USERNAME
+    assert len(trackers) == 2
+    assert trackers[1].close_calls == 1
+
+
+def test_write_attention_item_closes_connection(app_env, monkeypatch):
+    """F-010: write_attention_item is the highest-volume caller — fires
+    once per dispatched marker. Confirm close is called even on the
+    success path that returns cursor.lastrowid."""
+    ensure_system_worker_user()
+    trackers = _patch_tracking_connect(monkeypatch)
+
+    row_id = write_attention_item(
+        item_type="test",
+        affected_user=SYSTEM_WORKER_USERNAME,
+        case_id=None,
+        severity="normal",
+        details="connection-lifecycle test",
+    )
+    assert isinstance(row_id, int)
+    assert len(trackers) == 1
+    assert trackers[0].close_calls == 1, (
+        "success path with return value must still close the connection"
+    )
