@@ -442,3 +442,103 @@ def test_csv_concurrent_submits_get_distinct_ids(tmp_path):
     assert len(results) == 2
     assert results[0] != results[1]
     assert set(results) == {"UCD-FIL-001", "UCD-FIL-002"}
+
+
+# ----- F-011: SubmitError surface no longer leaks NAS path or errno -----
+#
+# CsvCaseRepository.submit_case used to raise SubmitError(f"manifest write
+# failed: {e}") which reflected the underlying OS exception verbatim into
+# the surgeon UI. A PermissionError on the NAS would surface
+# "[Errno 13] Permission denied: '/mnt/nas/or-raw/case_manifest.csv'" to a
+# surgeon. Post-fix: surgeon sees a curated generic message; operators get
+# the full context via the systemd journal (logged by app.repos.cases).
+
+
+_LEAKY_NAS_PATH = "/mnt/nas/or-raw/case_manifest.csv"
+
+
+def _force_manifest_write_to_raise(monkeypatch, exc: Exception):
+    """Patch CsvTable.transaction so any submit_case attempt raises ``exc``
+    inside the manifest-write try block. Lets us simulate filesystem
+    failures without setting real perms on the test tmpdir."""
+    from contextlib import contextmanager
+    from pipeline import csv_io as csv_io_mod
+
+    @contextmanager
+    def fake_transaction(self):
+        raise exc
+
+    monkeypatch.setattr(
+        csv_io_mod.CsvTable, "transaction", fake_transaction
+    )
+
+
+def test_submit_error_message_omits_nas_path_and_errno(tmp_path, monkeypatch):
+    """F-011: surgeon-facing SubmitError must not contain the NAS path or
+    the errno-style detail. Only the curated generic message reaches the
+    UI."""
+    from app.repos.cases import _SUBMIT_GENERIC_MSG
+
+    manifest = _seed(tmp_path / "m.csv", [])
+    repo = CsvCaseRepository(manifest, raw_video_root=tmp_path / "raw")
+
+    leaky_exc = PermissionError(13, "Permission denied", _LEAKY_NAS_PATH)
+    _force_manifest_write_to_raise(monkeypatch, leaky_exc)
+
+    with pytest.raises(SubmitError) as exc_info:
+        _submit(repo)
+
+    msg = str(exc_info.value)
+    assert msg == _SUBMIT_GENERIC_MSG
+    # Belt-and-suspenders: even if the message changes, none of the
+    # PHI-adjacent / infrastructure bits should appear.
+    assert _LEAKY_NAS_PATH not in msg
+    assert "Errno" not in msg
+    assert "Permission denied" not in msg
+    assert "PermissionError" not in msg
+
+
+def test_submit_error_logs_full_context_to_journal(tmp_path, monkeypatch, caplog):
+    """F-011 operator-side: the systemd journal (captured here via caplog)
+    must hold the full context — path, surgeon, attempted ucd_fil_id,
+    exception type — so on-call has what they need to triage."""
+    manifest = _seed(tmp_path / "m.csv", [])
+    repo = CsvCaseRepository(manifest, raw_video_root=tmp_path / "raw")
+
+    leaky_exc = PermissionError(13, "Permission denied", _LEAKY_NAS_PATH)
+    _force_manifest_write_to_raise(monkeypatch, leaky_exc)
+
+    caplog.set_level("ERROR", logger="app.repos.cases")
+    with pytest.raises(SubmitError):
+        _submit(repo)
+
+    # Exactly one ERROR record from app.repos.cases describing the failure.
+    records = [r for r in caplog.records if r.name == "app.repos.cases"]
+    assert len(records) == 1
+    rec = records[0]
+    assert "manifest write failed" in rec.message
+    # Full context lives in the structured 'extra' fields.
+    assert rec.manifest_path == str(manifest)
+    assert rec.surgeon == "sarin"
+    assert rec.error_type == "PermissionError"
+    # exc_info attached for traceback walking.
+    assert rec.exc_info is not None
+    assert rec.exc_info[0] is PermissionError
+
+
+def test_submit_error_preserves_exception_chain(tmp_path, monkeypatch):
+    """F-011: ``raise SubmitError(...) from e`` must still attach the
+    original exception as ``__cause__`` so server-side debuggers can walk
+    the chain. The curated message is for the surgeon; the chain is for
+    the operator."""
+    manifest = _seed(tmp_path / "m.csv", [])
+    repo = CsvCaseRepository(manifest, raw_video_root=tmp_path / "raw")
+
+    original = PermissionError(13, "Permission denied", _LEAKY_NAS_PATH)
+    _force_manifest_write_to_raise(monkeypatch, original)
+
+    with pytest.raises(SubmitError) as exc_info:
+        _submit(repo)
+
+    assert exc_info.value.__cause__ is original
+    assert isinstance(exc_info.value.__cause__, PermissionError)

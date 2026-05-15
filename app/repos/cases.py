@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import os
 import re
 import tempfile
@@ -35,6 +36,17 @@ from pathlib import Path
 from typing import Iterable, Protocol
 
 from app.repos.segments import raw_root
+
+
+_log = logging.getLogger(__name__)
+
+# F-011: surgeon-facing message for any infrastructure failure during
+# submit_case. Generic by design — no path, no errno, no exception detail.
+# Operators get the full context via the journalctl-captured logger above;
+# the surgeon sees an actionable instruction instead of a stack-trace shape.
+_SUBMIT_GENERIC_MSG = (
+    "Submission could not be saved. Please contact your coordinator."
+)
 
 _DEFAULT_MANIFEST_PATH = Path("/mnt/nas/or-raw/case_manifest.csv")
 
@@ -251,6 +263,7 @@ class CsvCaseRepository:
         table = CsvTable(path, CASE_MANIFEST_COLUMNS, CaseManifestRow)
         submitted_at = datetime.now(timezone.utc).isoformat()
 
+        new_id: str | None = None
         try:
             with table.transaction() as tx:
                 existing_ids = [r.ucd_fil_id for r in tx.read_all()]
@@ -271,7 +284,22 @@ class CsvCaseRepository:
                 )
                 tx.append(row)
         except Exception as e:
-            raise SubmitError(f"manifest write failed: {e}") from e
+            # F-011: full context (path, surgeon, partial new_id, exception
+            # type) lands in the systemd journal via the logger; the surgeon
+            # sees only the curated generic message. ``exc_info=True`` chains
+            # the original traceback so operators can still walk it. The
+            # ``from e`` clause on the raise preserves __cause__ for any
+            # downstream debugger that introspects the exception chain.
+            _log.exception(
+                "submit_case: manifest write failed",
+                extra={
+                    "manifest_path": str(path),
+                    "surgeon": expected_surgeon,
+                    "ucd_fil_id_attempted": new_id,
+                    "error_type": type(e).__name__,
+                },
+            )
+            raise SubmitError(_SUBMIT_GENERIC_MSG) from e
 
         try:
             _write_ready_marker(

@@ -278,7 +278,11 @@ def test_record_malformed_quarantines_and_logs(tmp_path, app_env):
     assert len(items) == 1
     assert items[0]["type"] == TYPE_MALFORMED_MARKER
     assert items[0]["case_id"] is None
-    assert "JSON parse error" in items[0]["details"]
+    # F-030: details now carries the curated generic message; full path +
+    # parse-error text moved to the systemd journal (covered in the new
+    # F-030 tests below).
+    from app.worker.failures import _MALFORMED_GENERIC_MSG
+    assert items[0]["details"] == _MALFORMED_GENERIC_MSG
 
 
 # ----- F-006: stderr scrubbing into attention_items.details -----
@@ -473,3 +477,60 @@ def test_write_attention_item_closes_connection(app_env, monkeypatch):
     assert trackers[0].close_calls == 1, (
         "success path with return value must still close the connection"
     )
+
+
+# ----- F-030: record_malformed scrubs NAS path from attention_items.details -----
+#
+# attention_items.details is surgeon-visible via the Action Required tab.
+# Pre-fix, record_malformed wrote f"malformed marker at {marker.path}: {reason}"
+# which surfaced the full NAS path string. Post-fix: details carries a
+# curated generic message; the path + parse-error text move to the systemd
+# journal (covered by test_record_malformed_logs_full_context_to_journal).
+
+
+def test_record_malformed_details_omits_nas_path_and_reason(tmp_path, app_env):
+    """F-030: attention_items.details must contain only the curated generic
+    message — no NAS path, no parse-error text. Surgeon UI surface stays
+    free of internal infrastructure strings."""
+    from app.worker.failures import _MALFORMED_GENERIC_MSG
+
+    ensure_system_worker_user()
+    raw = tmp_path / "raw-sarin"
+    raw.mkdir()
+    bad = raw / ".ready-UCD-FIL-005.json"
+    bad.write_text("not_json{{{")
+    parse_reason = "JSON parse error: Expecting value: line 1 column 9 (char 8)"
+
+    record_malformed(MalformedMarker(bad, parse_reason))
+
+    items = _read_attention_items()
+    assert len(items) == 1
+    details = items[0]["details"]
+    assert details == _MALFORMED_GENERIC_MSG
+    # Belt-and-suspenders.
+    assert str(bad) not in details
+    assert "raw-sarin" not in details
+    assert "JSON parse error" not in details
+
+
+def test_record_malformed_logs_full_context_to_journal(tmp_path, app_env, caplog):
+    """F-030 operator-side: the systemd journal (captured here via caplog)
+    must hold the marker path and parse-error reason. Otherwise the
+    quarantine is unactionable — the operator sees the curated row in the
+    UI but has no way to find the offending file."""
+    ensure_system_worker_user()
+    raw = tmp_path / "raw-sarin"
+    raw.mkdir()
+    bad = raw / ".ready-UCD-FIL-005.json"
+    bad.write_text("not_json{{{")
+    parse_reason = "missing required field 'segments'"
+
+    caplog.set_level("WARNING", logger="app.worker.failures")
+    record_malformed(MalformedMarker(bad, parse_reason))
+
+    records = [r for r in caplog.records if r.name == "app.worker.failures"]
+    assert len(records) == 1
+    rec = records[0]
+    assert "malformed marker" in rec.message
+    assert rec.marker_path == str(bad)
+    assert rec.parse_error == parse_reason

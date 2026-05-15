@@ -10,6 +10,7 @@ FK never fires."""
 
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 
@@ -17,6 +18,18 @@ from app.db.connection import connect, utcnow
 
 from app.worker.dispatch import DispatchOutcome
 from app.worker.scan import Marker, MalformedMarker
+
+
+_log = logging.getLogger(__name__)
+
+# F-030: surgeon-facing message for malformed-marker quarantines. Generic by
+# design — no path, no parse-error text. Operators get the full context
+# (marker path + parse-failure reason) via the journalctl-captured logger
+# above; the surgeon sees an actionable instruction in the Action Required
+# tab instead of internal NAS path strings.
+_MALFORMED_GENERIC_MSG = (
+    "A submitted case could not be processed. Please contact your coordinator."
+)
 
 SYSTEM_WORKER_USERNAME = "system_worker"
 
@@ -190,12 +203,24 @@ def record_dispatch_outcome(marker: Marker, outcome: DispatchOutcome) -> None:
 def record_malformed(marker: MalformedMarker) -> None:
     """Log + quarantine path for parse-time failures. No surgeon lookup
     available (the marker is unparsed); affected_user falls back to
-    system_worker and details carry the marker path + reason."""
+    system_worker.
+
+    F-030: ``attention_items.details`` is surgeon-visible (Action Required
+    tab). Path + parse-error text go to the systemd journal via the logger;
+    the row itself carries only the curated generic message so internal NAS
+    paths and Python parse-error strings never reach the surgeon UI."""
+    _log.warning(
+        "malformed marker",
+        extra={
+            "marker_path": str(marker.path),
+            "parse_error": marker.reason,
+        },
+    )
     write_attention_item(
         item_type=TYPE_MALFORMED_MARKER,
         affected_user=SYSTEM_WORKER_USERNAME,
         case_id=None,
         severity="normal",
-        details=f"malformed marker at {marker.path}: {marker.reason}",
+        details=_MALFORMED_GENERIC_MSG,
     )
     archive_marker(marker.path, "malformed")
