@@ -542,3 +542,92 @@ def test_submit_error_preserves_exception_chain(tmp_path, monkeypatch):
 
     assert exc_info.value.__cause__ is original
     assert isinstance(exc_info.value.__cause__, PermissionError)
+
+
+# ----- F-032: marker-write SubmitError surface no longer leaks NAS path -----
+#
+# CsvCaseRepository.submit_case's marker-write failure path used to raise
+# SubmitError(f"manifest committed as {new_id} but ready marker failed: {e}")
+# which reflected the underlying OS exception (incl. raw-<surgeon>/ NAS path)
+# into the surgeon UI. Same shape as F-011, different state semantic
+# (manifest already committed → partial-success failure mode).
+
+
+def _force_marker_write_to_raise(monkeypatch, exc: Exception):
+    """Patch ``_write_ready_marker`` so any submit_case attempt that reaches
+    the marker step raises ``exc``. Manifest commit succeeds first; only
+    the marker write fails."""
+    from app.repos import cases as cases_mod
+
+    def fake_write_ready_marker(*args, **kwargs):
+        raise exc
+
+    monkeypatch.setattr(
+        cases_mod, "_write_ready_marker", fake_write_ready_marker
+    )
+
+
+def test_marker_write_error_message_omits_nas_path(tmp_path, monkeypatch):
+    """F-032: surgeon-facing SubmitError on marker-write failure must
+    contain only the curated partial-success message — no NAS path, no
+    errno detail. Distinct wording from F-011 because the case state
+    differs (manifest committed, marker missing)."""
+    from app.repos.cases import _MARKER_WRITE_GENERIC_MSG
+
+    manifest = _seed(tmp_path / "m.csv", [])
+    raw_root = tmp_path / "raw"
+    raw_root.mkdir()
+    repo = CsvCaseRepository(manifest, raw_video_root=raw_root)
+
+    leaky_path = "/mnt/nas/raw-sarin/.ready-UCD-FIL-001.json.tmp"
+    leaky_exc = PermissionError(13, "Permission denied", leaky_path)
+    _force_marker_write_to_raise(monkeypatch, leaky_exc)
+
+    with pytest.raises(SubmitError) as exc_info:
+        _submit(repo)
+
+    msg = str(exc_info.value)
+    assert msg == _MARKER_WRITE_GENERIC_MSG
+    assert leaky_path not in msg
+    assert "raw-sarin" not in msg
+    assert "Errno" not in msg
+    assert "Permission denied" not in msg
+    # The message must reflect the partial-success state — i.e., it must
+    # tell the surgeon the submission WAS saved (distinguishing from F-011's
+    # "could not be saved" wording).
+    assert "saved" in msg
+    assert "trigger" in msg
+
+
+def test_marker_write_error_logs_full_context_to_journal(
+    tmp_path, monkeypatch, caplog
+):
+    """F-032 operator-side: the journal must capture raw_root, surgeon,
+    the committed ucd_fil_id, and the exception type so operators can
+    locate the case and re-issue the marker manually."""
+    manifest = _seed(tmp_path / "m.csv", [])
+    raw_root = tmp_path / "raw"
+    raw_root.mkdir()
+    repo = CsvCaseRepository(manifest, raw_video_root=raw_root)
+
+    leaky_exc = PermissionError(13, "Permission denied", "/mnt/nas/raw-sarin")
+    _force_marker_write_to_raise(monkeypatch, leaky_exc)
+
+    caplog.set_level("ERROR", logger="app.repos.cases")
+    with pytest.raises(SubmitError):
+        _submit(repo)
+
+    records = [
+        r for r in caplog.records
+        if r.name == "app.repos.cases"
+        and "ready marker write failed" in r.message
+    ]
+    assert len(records) == 1
+    rec = records[0]
+    assert rec.raw_root == str(raw_root)
+    assert rec.surgeon == "sarin"
+    # The committed ucd_fil_id (UCD-FIL-001 since the manifest seed was empty)
+    # must be in the log so operators know which case to re-trigger.
+    assert rec.ucd_fil_id == "UCD-FIL-001"
+    assert rec.error_type == "PermissionError"
+    assert rec.exc_info is not None

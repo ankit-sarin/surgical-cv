@@ -48,6 +48,17 @@ _SUBMIT_GENERIC_MSG = (
     "Submission could not be saved. Please contact your coordinator."
 )
 
+# F-032: surgeon-facing message for the partial-success failure mode where
+# the manifest was committed but the ready marker (the worker's processing
+# trigger) could not be written. Distinct wording from _SUBMIT_GENERIC_MSG
+# because the case state is different — the case row exists, just no
+# downstream processing kicked off. Coordinator can re-issue the marker
+# manually with operator tooling.
+_MARKER_WRITE_GENERIC_MSG = (
+    "Submission was saved but its processing trigger could not be written. "
+    "Please contact your coordinator."
+)
+
 _DEFAULT_MANIFEST_PATH = Path("/mnt/nas/or-raw/case_manifest.csv")
 
 
@@ -310,11 +321,23 @@ class CsvCaseRepository:
                 segment_filenames,
             )
         except Exception as e:
-            # Manifest already committed — surface the partial-failure so
-            # the surgeon can re-trigger marker writing manually if needed.
-            raise SubmitError(
-                f"manifest committed as {new_id} but ready marker failed: {e}"
-            ) from e
+            # F-032: manifest already committed → partial-success failure
+            # mode. Full context (raw root, surgeon, ucd_fil_id, exception
+            # type) goes to the systemd journal so operators can locate the
+            # case and re-issue the marker manually; the surgeon sees only
+            # the curated generic message that says what state the case is
+            # in. Pre-fix: SubmitError(f"...: {e}") leaked the full NAS
+            # raw-<surgeon>/ path on PermissionError / DiskFull / etc.
+            _log.exception(
+                "submit_case: ready marker write failed",
+                extra={
+                    "raw_root": str(self._raw_root()),
+                    "surgeon": partial_row["surgeon"],
+                    "ucd_fil_id": new_id,
+                    "error_type": type(e).__name__,
+                },
+            )
+            raise SubmitError(_MARKER_WRITE_GENERIC_MSG) from e
 
         return SubmitResult(ucd_fil_id=new_id, submitted_at=submitted_at)
 
