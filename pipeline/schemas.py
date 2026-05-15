@@ -47,6 +47,7 @@ PIPELINE_STATE_COLUMNS: tuple[str, ...] = (
     "concat_filename",
     "deid_filename",
     "stage",
+    "intake_ts",
     "concat_ts",
     "deid_ts",
     "verify_ts",
@@ -154,6 +155,11 @@ class PipelineStateRow(BaseModel):
     concat_filename: str = ""
     deid_filename: str = ""
     stage: Stage
+    # Submission timestamp: copied from the worker marker's ``submitted_at``
+    # at intake-row creation. Empty for rows written before this column
+    # existed; downstream "stuck submission" detection treats empty as
+    # unknown rather than escalating.
+    intake_ts: str = ""
     concat_ts: str = ""
     deid_ts: str = ""
     verify_ts: str = ""
@@ -169,7 +175,7 @@ class PipelineStateRow(BaseModel):
                 raise ValueError("raw_segments elements must not contain '|'")
         return v
 
-    @field_validator("concat_ts", "deid_ts", "verify_ts")
+    @field_validator("intake_ts", "concat_ts", "deid_ts", "verify_ts")
     @classmethod
     def _iso_or_empty(cls, v: str) -> str:
         if v == "":

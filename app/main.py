@@ -48,8 +48,10 @@ from app.db.connection import connect, utcnow
 from app.exceptions import ScopeViolationError
 from app.repos import (
     CsvCaseRepository,
+    CsvPipelineStateRepository,
     FilesystemRawSegmentRepository,
     Repos,
+    SqliteAttentionItemsRepository,
     SqlitePicklistRepository,
 )
 from app.scopes import AdminScope, SurgeonScope, UserScope
@@ -140,6 +142,8 @@ def build_scope(
         case=CsvCaseRepository(),
         segment=FilesystemRawSegmentRepository(),
         picklist=SqlitePicklistRepository(),
+        pipeline_state=CsvPipelineStateRepository(),
+        attention=SqliteAttentionItemsRepository(),
     )
     if user["role"] == "admin":
         return AdminScope(user["username"], repos)

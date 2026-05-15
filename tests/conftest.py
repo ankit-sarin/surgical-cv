@@ -80,6 +80,14 @@ def _init_and_seed(db_path: Path) -> None:
             " created_at) VALUES (?, 'surgeon', ?, 'colorectal', 0, ?)",
             ("inactiveuser", "ghost", SEED_TS),
         )
+        # Second active surgeon, intentionally with a folder_slug that does
+        # NOT match any seeded case_manifest row — needed for empty-state /
+        # cross-surgeon scope tests that want a "no cases yet" baseline.
+        conn.execute(
+            "INSERT INTO users (username, role, folder_slug, specialty, active, "
+            " created_at) VALUES (?, 'surgeon', ?, 'colorectal', 1, ?)",
+            ("anoren", "noren", SEED_TS),
+        )
         for row in _TEST_PICKLISTS:
             conn.execute(
                 "INSERT INTO picklist_values "

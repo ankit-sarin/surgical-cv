@@ -2,13 +2,16 @@
 
 Intake tab hosts Sections 1-4 (segments, procedure + approach, case context,
 notes). Section 5 (review + submit) lands in a future spec.
-My Cases and Action Required remain placeholders until their own specs.
+My Cases tab is read-only status display with 30 s polling.
+Action Required remains a placeholder until its own spec.
 """
 
 from __future__ import annotations
 
-from collections import Counter
-from datetime import datetime
+import os
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
+from html import escape
 
 import gradio as gr
 
@@ -18,6 +21,14 @@ from app.auth import (
     identity_string_for_request,
     lookup_active_user,
 )
+from app.badges import BadgeState, derive_badge_state
+from app.badges_html import (
+    MY_CASES_CSS,
+    badge_html,
+    format_counter_strip,
+    format_footer,
+    pipeline_timeline_html,
+)
 from app.intake.submit import (
     SubmitOutcome,
     ValidationContext,
@@ -26,14 +37,31 @@ from app.intake.submit import (
 from app.phi import scan_for_phi
 from app.repos import (
     CsvCaseRepository,
+    CsvPipelineStateRepository,
     FilesystemRawSegmentRepository,
     PicklistValue,
     Repos,
     SegmentRecord,
+    SqliteAttentionItemsRepository,
     SqlitePicklistRepository,
 )
 from app.scopes import SurgeonScope
 from pipeline.grouping import group_segments
+
+
+# Read once at module load; runtime reconfigurability is a future spec.
+_STUCK_THRESHOLD_MINUTES = int(os.environ.get("STUCK_THRESHOLD_MINUTES", "15"))
+
+_MY_CASES_DF_HEADERS = [
+    "UCD-FIL-ID", "Date", "Procedure", "Approach", "OR", "Status", "Updated",
+]
+# Six string columns + one HTML column for Status. Gradio's DataFrame
+# renders ``html`` cells with their markup intact rather than escaping.
+_MY_CASES_DF_DATATYPES = ["str", "str", "str", "str", "str", "html", "str"]
+
+_EMPTY_CASES_MARKDOWN = (
+    "_No cases yet. Submit your first case via the Intake tab._"
+)
 
 
 _EMPTY_STATE_MSG = (
@@ -108,6 +136,8 @@ def _scope_from_request(request: gr.Request | None) -> SurgeonScope | None:
         case=CsvCaseRepository(),
         segment=FilesystemRawSegmentRepository(),
         picklist=SqlitePicklistRepository(),
+        pipeline_state=CsvPipelineStateRepository(),
+        attention=SqliteAttentionItemsRepository(),
     )
     return SurgeonScope(
         user["username"],
@@ -823,6 +853,329 @@ def _build_intake_section5(
     return validation_error_md, phi_confirm_group, submit_btn, clear_btn
 
 
+# ----- My Cases tab -----
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_iso_or_none(ts: str | None) -> datetime | None:
+    if not ts:
+        return None
+    try:
+        parsed = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _date_for_row(state: dict | None, case: dict) -> str:
+    """``YYYY-MM-DD`` if ``intake_ts`` parses, else fall back to
+    ``case_year``. UTC-displayed for v1 — local-tz conversion is a
+    follow-up spec when surgeons start complaining."""
+    if state is not None:
+        parsed = _parse_iso_or_none(state.get("intake_ts"))
+        if parsed is not None:
+            return parsed.date().isoformat()
+    return case.get("case_year", "")
+
+
+def _updated_for_row(state: dict | None) -> str:
+    """Most-recent stage timestamp on the row, displayed as ISO without
+    seconds — empty for cases that never advanced past intake."""
+    if state is None:
+        return ""
+    for key in ("verify_ts", "deid_ts", "concat_ts", "intake_ts"):
+        ts = _parse_iso_or_none(state.get(key))
+        if ts is not None:
+            return ts.strftime("%Y-%m-%d %H:%M")
+    return ""
+
+
+def _sort_key(case_id: str, case: dict, state: dict | None) -> tuple:
+    """Newest first by ``intake_ts`` desc; pre-migration rows (empty
+    intake_ts) fall back to case_year desc, then ucd_fil_id desc.
+
+    Returns a comparison tuple where smaller = appears earlier in the
+    sorted output. We want descending order, so each tuple element is
+    negated (timestamps via -timestamp(), strings via reverse()).
+    Sorting ascending on the resulting tuple gives newest-first."""
+    has_ts = False
+    ts_key = 0.0
+    if state is not None:
+        parsed = _parse_iso_or_none(state.get("intake_ts"))
+        if parsed is not None:
+            has_ts = True
+            ts_key = -parsed.timestamp()
+    # Primary key: 0 if a real intake_ts exists (so timestamped rows sort
+    # as a group above the legacy ones), 1 if it doesn't.
+    primary = 0 if has_ts else 1
+    # Within the timestamped group: -timestamp (desc by time).
+    # Within the legacy group: -int(case_year) then reverse case_id.
+    try:
+        year_key = -int(case.get("case_year", "0"))
+    except (ValueError, TypeError):
+        year_key = 0
+    # Reverse case_id for desc: invert each char's codepoint by negation
+    # via tuple of negated ords. Cheap and total over UCD-FIL-### shape.
+    id_key = tuple(-ord(c) for c in case_id)
+    return (primary, ts_key, year_key, id_key)
+
+
+def _build_repos_for_my_cases() -> Repos:
+    """Per-render repo bundle. Mirrors ``_scope_from_request`` but exposed
+    here so the My Cases render functions can be called from the timer
+    without re-decoding the session — repos themselves are stateless."""
+    return Repos(
+        case=CsvCaseRepository(),
+        segment=FilesystemRawSegmentRepository(),
+        picklist=SqlitePicklistRepository(),
+        pipeline_state=CsvPipelineStateRepository(),
+        attention=SqliteAttentionItemsRepository(),
+    )
+
+
+def render_my_cases(request: gr.Request) -> tuple:
+    """Build the My Cases view.
+
+    Returns a 5-tuple matching the outputs wired in ``_build_my_cases``:
+        (cases_df_update, header_text, footer_text,
+         empty_state_update, detail_group_update)
+
+    Folder slug comes exclusively from the authenticated session — never
+    from form/event data. If the request is unauthenticated (impossible
+    in production because the auth_dep gate already ran, but defensive
+    in tests) we render the empty-state view rather than crashing."""
+    scope = _scope_from_request(request)
+    now = _utcnow()
+    if scope is None:
+        return (
+            gr.update(value=[], visible=False),
+            "",
+            format_footer(now),
+            gr.update(value=_EMPTY_CASES_MARKDOWN, visible=True),
+            gr.update(visible=False),
+        )
+
+    case_ids = scope.repos.case.list_owned_by(scope.folder_slug)
+    if not case_ids:
+        return (
+            gr.update(value=[], visible=False),
+            "",
+            format_footer(now),
+            gr.update(value=_EMPTY_CASES_MARKDOWN, visible=True),
+            gr.update(visible=False),
+        )
+
+    states = scope.repos.pipeline_state.list_for_case_ids(case_ids)
+    attention = scope.repos.attention.has_attention_for_case_ids(case_ids)
+    cases = {cid: scope.repos.case.get_case(cid) or {} for cid in case_ids}
+
+    counts: dict[BadgeState, int] = defaultdict(int)
+    rows: list[tuple] = []
+    for case_id in case_ids:
+        case = cases[case_id]
+        state = states.get(case_id)
+        badge = derive_badge_state(
+            state,
+            attention.get(case_id, False),
+            now,
+            _STUCK_THRESHOLD_MINUTES,
+        )
+        counts[badge] += 1
+        rows.append((
+            case_id,
+            case,
+            state,
+            badge,
+        ))
+    rows.sort(key=lambda r: _sort_key(r[0], r[1], r[2]))
+
+    df_rows = [
+        [
+            case_id,
+            _date_for_row(state, case),
+            case.get("procedure_primary", ""),
+            case.get("approach", ""),
+            case.get("or_room", ""),
+            badge_html(badge),
+            _updated_for_row(state),
+        ]
+        for case_id, case, state, badge in rows
+    ]
+    return (
+        gr.update(value=df_rows, visible=True),
+        format_counter_strip(counts),
+        format_footer(now),
+        gr.update(visible=False),
+        gr.update(visible=False),
+    )
+
+
+def _format_metadata_md(case: dict) -> str:
+    additionals = case.get("procedure_additional") or []
+    additional_str = ", ".join(additionals) if additionals else "—"
+    parts = [
+        f"**Year:** {escape(str(case.get('case_year') or '—'))}",
+        f"**OR:** {escape(case.get('or_room') or '—')}",
+        f"**Procedure:** {escape(case.get('procedure_primary') or '—')}",
+        f"**Additional:** {escape(additional_str)}",
+        f"**Approach:** {escape(case.get('approach') or '—')}",
+        f"**Indication:** {escape(case.get('indication') or '—')}",
+    ]
+    md = " · ".join(parts)
+    notes = case.get("notes") or ""
+    if notes:
+        md += f"\n\n**Notes:** {escape(notes)}"
+    return md
+
+
+def _format_segments_md(state: dict | None) -> str:
+    if state is None:
+        return "_Segments: pending_"
+    segs = state.get("raw_segments") or []
+    if not segs:
+        return "_Segments: (none recorded)_"
+    return "**Segments:** " + ", ".join(escape(s) for s in segs)
+
+
+def _format_timestamps_md(state: dict | None) -> str:
+    if state is None:
+        return "_Timestamps: pending_"
+    pieces = []
+    for label, key in (
+        ("intake", "intake_ts"),
+        ("concat", "concat_ts"),
+        ("deid", "deid_ts"),
+        ("verify", "verify_ts"),
+    ):
+        parsed = _parse_iso_or_none(state.get(key))
+        pieces.append(
+            f"**{label}:** {parsed.strftime('%Y-%m-%d %H:%M') if parsed else '—'}"
+        )
+    return " · ".join(pieces)
+
+
+def _blank_detail_outputs() -> tuple:
+    return (
+        "",   # timeline_html
+        "",   # metadata_md
+        "",   # segments_md
+        "",   # timestamps_md
+        gr.update(visible=False),
+    )
+
+
+def render_detail(evt: gr.SelectData, request: gr.Request) -> tuple:
+    """Render the detail panel for the selected row.
+
+    Defense in depth: re-validate ownership through the case repo even
+    though ``render_my_cases`` only surfaces owned cases. Folder slug
+    comes from the session, never from the SelectData event."""
+    scope = _scope_from_request(request)
+    if scope is None:
+        return _blank_detail_outputs()
+
+    case_id = _extract_case_id_from_select(evt)
+    if not case_id:
+        return _blank_detail_outputs()
+
+    if not scope.repos.case.case_belongs_to(case_id, scope.folder_slug):
+        # Should be unreachable — table only shows owned cases. Fail
+        # silent + invisible rather than raising; the centralized
+        # ScopeViolationError handler is reserved for actual writes.
+        return _blank_detail_outputs()
+
+    case = scope.repos.case.get_case(case_id) or {}
+    state = scope.repos.pipeline_state.get_state(case_id)
+    attention = scope.repos.attention.has_attention_for_case_ids([case_id])
+    badge = derive_badge_state(
+        state,
+        attention.get(case_id, False),
+        _utcnow(),
+        _STUCK_THRESHOLD_MINUTES,
+    )
+    return (
+        pipeline_timeline_html(state, badge),
+        _format_metadata_md(case),
+        _format_segments_md(state),
+        _format_timestamps_md(state),
+        gr.update(visible=True),
+    )
+
+
+def _extract_case_id_from_select(evt: gr.SelectData) -> str | None:
+    """Pull the UCD-FIL-### value out of the SelectData event. Gradio's
+    DataFrame select event exposes ``evt.row_value`` (the full row) plus
+    ``evt.index`` (the [row, col] pair). The first column is always the
+    case id by construction in :data:`_MY_CASES_DF_HEADERS`."""
+    row_value = getattr(evt, "row_value", None)
+    if isinstance(row_value, (list, tuple)) and row_value:
+        candidate = row_value[0]
+        if isinstance(candidate, str):
+            return candidate
+    # Fallback for older Gradio events where row_value is unset.
+    value = getattr(evt, "value", None)
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _build_my_cases(blocks: gr.Blocks) -> dict:
+    """Construct the My Cases tab body. Returns a dict of the components
+    that need to be reachable from outside — primarily for tests and for
+    the polling timer wiring (which lives at the build_surgeon_app level
+    so all timers register on the same blocks object)."""
+    css_html = gr.HTML(f"<style>{MY_CASES_CSS}</style>", visible=False)
+    header_md = gr.Markdown("")
+    cases_df = gr.DataFrame(
+        headers=_MY_CASES_DF_HEADERS,
+        datatype=_MY_CASES_DF_DATATYPES,
+        interactive=False,
+        wrap=True,
+        visible=False,
+        elem_id="my-cases-df",
+    )
+    empty_state_md = gr.Markdown(_EMPTY_CASES_MARKDOWN, visible=True)
+
+    with gr.Group(visible=False, elem_id="my-cases-detail") as detail_group:
+        timeline_html = gr.HTML("")
+        metadata_md = gr.Markdown("")
+        segments_md = gr.Markdown("")
+        timestamps_md = gr.Markdown("")
+
+    footer_md = gr.Markdown("", elem_id="my-cases-footer")
+    timer = gr.Timer(value=30, active=True)
+
+    render_outputs = [
+        cases_df, header_md, footer_md, empty_state_md, detail_group,
+    ]
+    detail_outputs = [
+        timeline_html, metadata_md, segments_md, timestamps_md, detail_group,
+    ]
+
+    blocks.load(render_my_cases, None, render_outputs)
+    timer.tick(render_my_cases, None, render_outputs)
+    cases_df.select(render_detail, None, detail_outputs)
+
+    return {
+        "css_html": css_html,
+        "header_md": header_md,
+        "cases_df": cases_df,
+        "empty_state_md": empty_state_md,
+        "detail_group": detail_group,
+        "timeline_html": timeline_html,
+        "metadata_md": metadata_md,
+        "segments_md": segments_md,
+        "timestamps_md": timestamps_md,
+        "footer_md": footer_md,
+        "timer": timer,
+    }
+
+
 # ----- top-level Blocks build -----
 
 
@@ -901,7 +1254,7 @@ def build_surgeon_app() -> gr.Blocks:
 
                 blocks.load(fetch_picklists, None, picklists_state)
             with gr.Tab("My Cases"):
-                gr.Markdown("**My Cases** — coming soon.")
+                _build_my_cases(blocks)
             with gr.Tab("Action Required"):
                 gr.Markdown("**Action Required** — coming soon.")
         blocks.load(_identity, None, identity_md)

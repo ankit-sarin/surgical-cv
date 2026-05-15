@@ -145,11 +145,19 @@ def _get_state_row(paths: NasPaths, case_id: str) -> PipelineStateRow | None:
 
 
 def ensure_intake_row(
-    paths: NasPaths, case_id: str, segments: list[str]
+    paths: NasPaths,
+    case_id: str,
+    segments: list[str],
+    intake_ts: str = "",
 ) -> None:
     """Idempotent bootstrap. If the case has no pipeline_state row, insert
     at stage=intake with the marker's segments. If a row already exists,
-    leave it alone (operator may have manually advanced or retried it)."""
+    leave it alone (operator may have manually advanced or retried it).
+
+    ``intake_ts`` is the marker's ``submitted_at`` — persisted on the row
+    so downstream UI ("stuck submission" detection) doesn't depend on the
+    marker file (which moves to ``.processed/`` after dispatch). Empty
+    string is allowed for callers that don't have a timestamp."""
     table = CsvTable(
         paths.state_csv, PIPELINE_STATE_COLUMNS, PipelineStateRow
     )
@@ -162,6 +170,7 @@ def ensure_intake_row(
             concat_filename="",
             deid_filename="",
             stage=Stage.intake,
+            intake_ts=intake_ts,
             concat_ts="",
             deid_ts="",
             verify_ts="",
@@ -194,7 +203,9 @@ def dispatch_marker(
             detail=f"case {marker.ucd_fil_id} not present in case_manifest.csv",
         )
 
-    ensure_intake_row(paths, marker.ucd_fil_id, marker.segments)
+    ensure_intake_row(
+        paths, marker.ucd_fil_id, marker.segments, marker.submitted_at
+    )
 
     # Stage 1: concat (batch over surgeon — idempotent for already-concatenated rows)
     rc = driver.concat(marker.surgeon, marker.ucd_fil_id)

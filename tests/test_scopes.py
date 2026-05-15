@@ -9,19 +9,29 @@ import pytest
 
 from app.exceptions import ScopeViolationError
 from app.repos import (
+    InMemoryAttentionItemsRepository,
     InMemoryCaseRepository,
     InMemoryPicklistRepository,
+    InMemoryPipelineStateRepository,
     InMemoryRawSegmentRepository,
     Repos,
 )
 from app.scopes import AdminScope, SurgeonScope, UserScope
 
 
-def _repos(case=None, segment=None, picklist=None) -> Repos:
+def _repos(
+    case=None,
+    segment=None,
+    picklist=None,
+    pipeline_state=None,
+    attention=None,
+) -> Repos:
     return Repos(
         case=case or InMemoryCaseRepository(),
         segment=segment or InMemoryRawSegmentRepository(),
         picklist=picklist or InMemoryPicklistRepository(),
+        pipeline_state=pipeline_state or InMemoryPipelineStateRepository(),
+        attention=attention or InMemoryAttentionItemsRepository(),
     )
 
 

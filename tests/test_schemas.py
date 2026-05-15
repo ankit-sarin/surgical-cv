@@ -47,7 +47,7 @@ def _valid_state_kwargs(**overrides):
 
 def test_columns_have_expected_lengths():
     assert len(CASE_MANIFEST_COLUMNS) == 10
-    assert len(PIPELINE_STATE_COLUMNS) == 9
+    assert len(PIPELINE_STATE_COLUMNS) == 10
 
 
 def test_manifest_columns_include_spec_j_schema():

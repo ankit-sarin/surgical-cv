@@ -10,6 +10,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.repos.attention import (  # noqa: F401  — re-export
+    AttentionItemsRepository,
+    InMemoryAttentionItemsRepository,
+    SqliteAttentionItemsRepository,
+)
 from app.repos.cases import (  # noqa: F401  — re-export
     CaseRepository,
     CsvCaseRepository,
@@ -24,6 +29,11 @@ from app.repos.picklists import (  # noqa: F401  — re-export
     PicklistValue,
     SqlitePicklistRepository,
 )
+from app.repos.pipeline_state import (  # noqa: F401  — re-export
+    CsvPipelineStateRepository,
+    InMemoryPipelineStateRepository,
+    PipelineStateRepository,
+)
 from app.repos.segments import (  # noqa: F401  — re-export
     FilesystemRawSegmentRepository,
     InMemoryRawSegmentRepository,
@@ -37,3 +47,5 @@ class Repos:
     case: CaseRepository
     segment: RawSegmentRepository
     picklist: PicklistRepository
+    pipeline_state: PipelineStateRepository
+    attention: AttentionItemsRepository
