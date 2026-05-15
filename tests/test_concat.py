@@ -522,3 +522,100 @@ def test_cli_bad_surgeon_returns_2_via_subprocess(tmp_path):
     )
     assert result.returncode == 2
     assert "invalid surgeon name" in result.stderr
+
+
+# ----- F-022: per-case concat (--case flag) -----
+#
+# Mirrors the existing per-case deid/verify test structure. The new
+# behavior eliminates the cross-case-failure coupling — concat used to
+# be batch-by-surgeon, so a failure on case A would roll back the
+# in-flight transaction for case B. Per-case dispatch from the worker
+# now bounds each transaction to a single case.
+
+
+def test_concat_case_happy_path_selects_only_named_case(tmp_path, monkeypatch):
+    paths = _make_paths(tmp_path)
+    _patch_helpers(monkeypatch)
+    raw_dir, segs_a = _make_segments(
+        paths, "sarin", ["capt0_20260101-080000.mp4"],
+    )
+    _, segs_b = _make_segments(
+        paths, "sarin", ["capt0_20260102-090000.mp4"],
+    )
+    _seed_manifest(
+        paths,
+        _manifest_row("UCD-FIL-001", "sarin"),
+        _manifest_row("UCD-FIL-002", "sarin"),
+    )
+    _seed_state(
+        paths,
+        _state_row("UCD-FIL-001", raw_segments=segs_a),
+        _state_row("UCD-FIL-002", raw_segments=segs_b),
+    )
+
+    rc = concat_mod.handle(
+        Namespace(surgeon="sarin", case="UCD-FIL-002"), paths=paths
+    )
+    assert rc == 0
+
+    rows = _state_rows(paths)
+    # Only the targeted case advances; the sibling stays at intake.
+    assert rows["UCD-FIL-001"].stage == Stage.intake
+    assert rows["UCD-FIL-002"].stage == Stage.concatenated
+
+    entries = _audit_entries(paths)
+    assert len(entries) == 1
+    assert entries[0]["case"] == "UCD-FIL-002"
+
+
+def test_concat_case_bad_format_returns_2(tmp_path, capsys):
+    paths = _make_paths(tmp_path)
+    _seed_manifest(paths, _manifest_row("UCD-FIL-001", "sarin"))
+    _seed_state(paths, _state_row("UCD-FIL-001"))
+
+    rc = concat_mod.handle(
+        Namespace(surgeon="sarin", case="not-a-case"), paths=paths
+    )
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "UCD-FIL-###" in err
+
+
+def test_concat_case_not_in_state_returns_2(tmp_path, capsys):
+    paths = _make_paths(tmp_path)
+    _seed_manifest(paths, _manifest_row("UCD-FIL-001", "sarin"))
+    _seed_state(paths, _state_row("UCD-FIL-001"))
+
+    rc = concat_mod.handle(
+        Namespace(surgeon="sarin", case="UCD-FIL-999"), paths=paths
+    )
+    assert rc == 2
+    assert "not found in state" in capsys.readouterr().err
+
+
+def test_concat_case_belongs_to_different_surgeon_returns_2(tmp_path, capsys):
+    """F-022 ownership guard: even if --case names a real case, the
+    surgeon-arg must match the manifest's owner."""
+    paths = _make_paths(tmp_path)
+    _seed_manifest(paths, _manifest_row("UCD-FIL-001", "miller"))
+    _seed_state(paths, _state_row("UCD-FIL-001"))
+
+    rc = concat_mod.handle(
+        Namespace(surgeon="sarin", case="UCD-FIL-001"), paths=paths
+    )
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "miller" in err and "sarin" in err
+
+
+def test_concat_case_at_wrong_stage_returns_2(tmp_path, capsys):
+    """A case already past intake must not be reprocessed via --case."""
+    paths = _make_paths(tmp_path)
+    _seed_manifest(paths, _manifest_row("UCD-FIL-001", "sarin"))
+    _seed_state(paths, _state_row("UCD-FIL-001", stage=Stage.concatenated))
+
+    rc = concat_mod.handle(
+        Namespace(surgeon="sarin", case="UCD-FIL-001"), paths=paths
+    )
+    assert rc == 2
+    assert "expected 'intake'" in capsys.readouterr().err

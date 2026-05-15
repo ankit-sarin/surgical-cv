@@ -74,18 +74,17 @@ def test_raw_video_root_env_var_is_ignored(monkeypatch):
     different folders) can re-emerge in production.
 
     Setup: set RAW_VIDEO_ROOT to a sentinel path, leave PIPELINE_NAS_ROOT
-    unset. Both the pipeline-side resolver and the app-side delegate must
-    return the default ``/mnt/nas`` — not the RAW_VIDEO_ROOT value."""
-    from app.repos.segments import raw_root as app_raw_root
+    unset. The single resolver (``pipeline.paths.nas_root``) must return
+    the default ``/mnt/nas`` — not the RAW_VIDEO_ROOT value.
+
+    Post-shim-retirement note: the prior ``app.repos.segments.raw_root``
+    delegate was deleted in the F-012 follow-up; ``app/repos/cases.py``
+    now imports ``nas_root`` directly. So there's only one layer to
+    assert against."""
     from pipeline.paths import nas_root
 
     monkeypatch.delenv("PIPELINE_NAS_ROOT", raising=False)
     monkeypatch.setenv("RAW_VIDEO_ROOT", "/mnt/should-be-ignored")
 
-    # Pipeline-side resolver (used by the worker scanner via resolve_paths).
     assert nas_root() == Path("/mnt/nas")
     assert resolve_paths().root == Path("/mnt/nas")
-
-    # App-side delegate (used by app/repos/cases.py's marker writer). Same
-    # source of truth, same answer — that's the F-012 invariant.
-    assert app_raw_root() == Path("/mnt/nas")

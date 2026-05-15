@@ -12,21 +12,12 @@ from app.repos.segments import (
     FilesystemRawSegmentRepository,
     InMemoryRawSegmentRepository,
     SegmentRecord,
-    raw_root,
 )
 
-
-# ----- raw_root() env override -----
-
-
-def test_raw_root_honors_env(monkeypatch, tmp_path):
-    monkeypatch.setenv("PIPELINE_NAS_ROOT", str(tmp_path))
-    assert raw_root() == tmp_path
-
-
-def test_raw_root_default_when_env_unset(monkeypatch):
-    monkeypatch.delenv("PIPELINE_NAS_ROOT", raising=False)
-    assert str(raw_root()) == "/mnt/nas"
+# Note: the previous ``raw_root()`` shim in app/repos/segments.py was
+# retired in the F-012 follow-up cleanup pass — the FastAPI app now imports
+# ``pipeline.paths.nas_root`` directly. Coverage of nas_root / env-var
+# behavior moved to tests/test_paths.py.
 
 
 # ----- FilesystemRawSegmentRepository: discovery -----

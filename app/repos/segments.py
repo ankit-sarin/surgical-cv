@@ -24,14 +24,7 @@ from pathlib import Path
 from typing import Protocol
 
 from pipeline.bdv import BDV_UNCLAIMED_RE  # F-015: shared canonical pattern
-from pipeline.paths import nas_root as _nas_root
-
-
-def raw_root() -> Path:
-    """Thin shim around ``pipeline.paths.nas_root`` retained for caller
-    compatibility (``app/repos/cases.py`` imports it). The body intentionally
-    holds no env-var read of its own — F-012 enforces the single-source rule."""
-    return _nas_root()
+from pipeline.paths import nas_root
 
 
 @dataclass(frozen=True)
@@ -60,7 +53,8 @@ def _parse_bdv_timestamp(filename: str) -> datetime | None:
 
 
 class FilesystemRawSegmentRepository:
-    """Reads ``raw-<folder_slug>/`` under ``raw_root()`` fresh on every call.
+    """Reads ``raw-<folder_slug>/`` under ``pipeline.paths.nas_root()`` fresh
+    on every call.
 
     Missing folder → empty list (treat as "no segments yet", not exception —
     same UX as having an empty folder). Non-matching files silently skipped.
@@ -70,7 +64,7 @@ class FilesystemRawSegmentRepository:
         self._root_override = root
 
     def _root(self) -> Path:
-        return self._root_override or raw_root()
+        return self._root_override or nas_root()
 
     def list_raw_segments(self, folder_slug: str) -> list[SegmentRecord]:
         folder = self._root() / f"raw-{folder_slug}"

@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.audit import log_audit
+from pipeline.commands._shared import format_cli_error
 from pipeline.csv_io import CsvTable
 from pipeline.diagnostician import (
     DiagnosticianInfraError,
@@ -346,10 +347,7 @@ def handle(args: Namespace, paths: NasPaths | None = None) -> int:
                     },
                 )
                 failed.append(case_id)
-                print(
-                    f"  {case_id}: FAILED — {error_summary}",
-                    file=sys.stderr,
-                )
+                print(format_cli_error(case_id, error_summary), file=sys.stderr)
                 continue
 
             ts = datetime.now(timezone.utc).isoformat()

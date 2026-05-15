@@ -34,8 +34,7 @@ from pathlib import Path
 from typing import Iterable, Protocol
 
 from pipeline.atomic_write import write_atomic  # F-014: shared atomic-write idiom
-
-from app.repos.segments import raw_root
+from pipeline.paths import nas_root
 
 
 _log = logging.getLogger(__name__)
@@ -198,7 +197,7 @@ class CsvCaseRepository:
         return self._path_override or manifest_path()
 
     def _raw_root(self) -> Path:
-        return self._raw_root_override or raw_root()
+        return self._raw_root_override or nas_root()
 
     def _read_rows(self) -> list[dict]:
         path = self._path()

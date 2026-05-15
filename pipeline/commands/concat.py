@@ -4,6 +4,7 @@ from argparse import Namespace
 from datetime import datetime, timezone
 
 from pipeline.audit import log_audit
+from pipeline.commands._shared import format_cli_error
 from pipeline.csv_io import CsvTable
 from pipeline.ffmpeg import (
     FFmpegError,
@@ -13,6 +14,7 @@ from pipeline.ffmpeg import (
 )
 from pipeline.paths import NasPaths, resolve_paths
 from pipeline.schemas import (
+    CASE_ID_RE,
     CASE_MANIFEST_COLUMNS,
     PIPELINE_STATE_COLUMNS,
     SURGEON_RE,
@@ -53,13 +55,65 @@ def handle(args: Namespace, paths: NasPaths | None = None) -> int:
     succeeded: list[str] = []
     failed: list[str] = []
 
+    target_case = getattr(args, "case", None)
+
     with state_table.transaction() as tx:
-        candidates = [
-            r
-            for r in tx.read_all()
-            if r.stage == Stage.intake
-            and surgeon_by_id.get(r.ucd_fil_id) == surgeon
-        ]
+        if target_case is not None:
+            # F-022: per-case concat. Mirrors the existing --case shape on
+            # deid / verify so the worker can dispatch markers individually
+            # instead of batch-by-surgeon. A failure on one case no longer
+            # rolls back the transaction for siblings in the same iteration.
+            if not CASE_ID_RE.match(target_case):
+                print(
+                    f"error: --case must match UCD-FIL-###, got {target_case!r}",
+                    file=sys.stderr,
+                )
+                return 2
+
+            target_row = next(
+                (r for r in tx.read_all() if r.ucd_fil_id == target_case),
+                None,
+            )
+            if target_row is None:
+                print(
+                    f"error: case {target_case} not found in state CSV",
+                    file=sys.stderr,
+                )
+                return 2
+
+            owner = surgeon_by_id.get(target_case)
+            if owner is None:
+                print(
+                    f"error: case {target_case} has no manifest entry; "
+                    "cannot verify surgeon ownership",
+                    file=sys.stderr,
+                )
+                return 2
+            if owner != surgeon:
+                print(
+                    f"error: case {target_case} belongs to surgeon={owner!r}, "
+                    f"not {surgeon!r}",
+                    file=sys.stderr,
+                )
+                return 2
+
+            if target_row.stage != Stage.intake:
+                print(
+                    f"error: case {target_case} is at stage="
+                    f"{target_row.stage.value!r}, expected 'intake'. "
+                    f"Use 'status --case {target_case}' to inspect.",
+                    file=sys.stderr,
+                )
+                return 2
+
+            candidates = [target_row]
+        else:
+            candidates = [
+                r
+                for r in tx.read_all()
+                if r.stage == Stage.intake
+                and surgeon_by_id.get(r.ucd_fil_id) == surgeon
+            ]
         if not candidates:
             print(f"No intake cases for surgeon={surgeon}")
             return 0
@@ -88,10 +142,7 @@ def handle(args: Namespace, paths: NasPaths | None = None) -> int:
                     },
                 )
                 failed.append(case_id)
-                print(
-                    f"  {case_id}: FAILED — {error_summary}",
-                    file=sys.stderr,
-                )
+                print(format_cli_error(case_id, error_summary), file=sys.stderr)
             else:
                 ts = datetime.now(timezone.utc).isoformat()
                 tx.update(

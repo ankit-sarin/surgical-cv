@@ -91,17 +91,15 @@ class _AdvancingDriver:
         self.nas = nas
         self.calls: list[tuple] = []
 
-    def concat(self, surgeon):
-        self.calls.append(("concat", surgeon))
-        for row in CsvTable(
-            self.nas.state_csv, PIPELINE_STATE_COLUMNS, PipelineStateRow
-        ).snapshot():
-            if row.stage == Stage.intake:
-                _set_state(
-                    self.nas, row.ucd_fil_id, Stage.concatenated,
-                    concat_filename=f"{surgeon}_x.mp4",
-                    concat_ts="2026-05-15T08:00:00",
-                )
+    def concat(self, surgeon, case_id):
+        # F-022: per-case concat — driver advances only the target case
+        # rather than every intake row for the surgeon.
+        self.calls.append(("concat", surgeon, case_id))
+        _set_state(
+            self.nas, case_id, Stage.concatenated,
+            concat_filename=f"{surgeon}_x.mp4",
+            concat_ts="2026-05-15T08:00:00",
+        )
         return SubprocessResult(0, "", "")
 
     def deid(self, surgeon, case_id):

@@ -106,8 +106,8 @@ class FakeDriver:
     on_verify: Callable[[], None] | None = None
     calls: list[tuple] = field(default_factory=list)
 
-    def concat(self, surgeon: str) -> SubprocessResult:
-        self.calls.append(("concat", surgeon))
+    def concat(self, surgeon: str, case_id: str) -> SubprocessResult:
+        self.calls.append(("concat", surgeon, case_id))
         if self.on_concat:
             self.on_concat()
         return SubprocessResult(
@@ -193,7 +193,7 @@ def test_dispatch_happy_path_through_all_three_stages(paths, marker):
     outcome = dispatch_marker(marker, paths, driver)
     assert outcome.kind == "success"
     assert driver.calls == [
-        ("concat", "sarin"),
+        ("concat", "sarin", "UCD-FIL-005"),
         ("deid", "sarin", "UCD-FIL-005"),
         ("verify", "sarin", "UCD-FIL-005"),
     ]

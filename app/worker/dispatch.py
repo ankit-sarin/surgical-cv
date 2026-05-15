@@ -46,7 +46,7 @@ class SubprocessResult:
 
 
 class PipelineDriver(Protocol):
-    def concat(self, surgeon: str) -> SubprocessResult: ...
+    def concat(self, surgeon: str, case_id: str) -> SubprocessResult: ...
     def deid(self, surgeon: str, case_id: str) -> SubprocessResult: ...
     def verify(self, surgeon: str, case_id: str) -> SubprocessResult: ...
 
@@ -59,8 +59,12 @@ class SubprocessPipelineDriver:
     def __init__(self, env: dict | None = None):
         self._env = env if env is not None else os.environ.copy()
 
-    def concat(self, surgeon: str) -> SubprocessResult:
-        return self._run(["concat", "--surgeon", surgeon])
+    def concat(self, surgeon: str, case_id: str) -> SubprocessResult:
+        # F-022: per-case concat (was batch --surgeon-only). Eliminates the
+        # cross-case-failure coupling — a concat exception on case A no
+        # longer rolls back the in-flight transaction for case B in the
+        # same iteration.
+        return self._run(["concat", "--surgeon", surgeon, "--case", case_id])
 
     def deid(self, surgeon: str, case_id: str) -> SubprocessResult:
         return self._run(["deid", "--surgeon", surgeon, "--case", case_id])
@@ -193,7 +197,7 @@ def dispatch_marker(
     ensure_intake_row(paths, marker.ucd_fil_id, marker.segments)
 
     # Stage 1: concat (batch over surgeon — idempotent for already-concatenated rows)
-    rc = driver.concat(marker.surgeon)
+    rc = driver.concat(marker.surgeon, marker.ucd_fil_id)
     if rc.returncode != 0:
         return DispatchOutcome(
             kind="hard_fail",

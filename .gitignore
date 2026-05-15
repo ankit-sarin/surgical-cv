@@ -14,6 +14,7 @@ build/
 .pytest_cache/
 .coverage
 .claude/
+*.bak
 primer.md
 bench/pull.pid
 bench/pull_log.txt

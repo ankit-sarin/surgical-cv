@@ -42,6 +42,7 @@ def build_parser():
 
     p_concat = subparsers.add_parser("concat", help="Concatenate BDV segments into a PHI master.")
     p_concat.add_argument("--surgeon", required=True, help="Surgeon folder name (e.g. sarin, miller).")
+    p_concat.add_argument("--case", default=None, help="Process only this case (UCD-FIL-###). Optional; defaults to batch mode.")
     p_concat.set_defaults(handler=concat.handle)
 
     p_deid = subparsers.add_parser("deid", help="De-identify concatenated cases for a surgeon.")
