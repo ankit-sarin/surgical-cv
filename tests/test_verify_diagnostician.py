@@ -53,7 +53,7 @@ def test_pass_verdict_validated(monkeypatch, evidence):
         calls.append(kwargs)
         return _make_response(_VALID_PASS)
 
-    monkeypatch.setattr(diagnostician.ollama, "chat", fake_chat)
+    monkeypatch.setattr(diagnostician._ollama_client, "chat", fake_chat)
     result = diagnose(evidence)
     assert isinstance(result, DiagnosticianVerdict)
     assert result.verdict == "pass"
@@ -68,7 +68,7 @@ def test_pass_verdict_validated(monkeypatch, evidence):
 
 def test_fail_verdict_validated(monkeypatch, evidence):
     monkeypatch.setattr(
-        diagnostician.ollama, "chat", lambda **kw: _make_response(_VALID_FAIL)
+        diagnostician._ollama_client, "chat", lambda **kw: _make_response(_VALID_FAIL)
     )
     result = diagnose(evidence)
     assert result.verdict == "fail"
@@ -84,7 +84,7 @@ def test_malformed_json_then_valid_retries_once(monkeypatch, evidence):
             return _make_raw_response("this is not json {{")
         return _make_response(_VALID_PASS)
 
-    monkeypatch.setattr(diagnostician.ollama, "chat", fake_chat)
+    monkeypatch.setattr(diagnostician._ollama_client, "chat", fake_chat)
     result = diagnose(evidence)
     assert result.verdict == "pass"
     assert calls["n"] == 2
@@ -92,7 +92,7 @@ def test_malformed_json_then_valid_retries_once(monkeypatch, evidence):
 
 def test_malformed_json_twice_raises_infra_error(monkeypatch, evidence):
     monkeypatch.setattr(
-        diagnostician.ollama, "chat", lambda **kw: _make_raw_response("nope {")
+        diagnostician._ollama_client, "chat", lambda **kw: _make_raw_response("nope {")
     )
     with pytest.raises(DiagnosticianInfraError) as exc_info:
         diagnose(evidence)
@@ -109,7 +109,7 @@ def test_missing_required_field_then_valid_retries(monkeypatch, evidence):
             return _make_response({"verdict": "pass"})  # missing reason, evidence
         return _make_response(_VALID_PASS)
 
-    monkeypatch.setattr(diagnostician.ollama, "chat", fake_chat)
+    monkeypatch.setattr(diagnostician._ollama_client, "chat", fake_chat)
     result = diagnose(evidence)
     assert result.verdict == "pass"
     assert calls["n"] == 2
@@ -117,7 +117,7 @@ def test_missing_required_field_then_valid_retries(monkeypatch, evidence):
 
 def test_missing_required_field_twice_raises_infra_error(monkeypatch, evidence):
     monkeypatch.setattr(
-        diagnostician.ollama,
+        diagnostician._ollama_client,
         "chat",
         lambda **kw: _make_response({"verdict": "pass"}),
     )
@@ -132,7 +132,7 @@ def test_extra_field_rejected_by_schema(monkeypatch, evidence):
     ValidationError, which triggers retry and ultimately infra error."""
     bad = {**_VALID_PASS, "surplus_field": "nope"}
     monkeypatch.setattr(
-        diagnostician.ollama, "chat", lambda **kw: _make_response(bad)
+        diagnostician._ollama_client, "chat", lambda **kw: _make_response(bad)
     )
     with pytest.raises(DiagnosticianInfraError) as exc_info:
         diagnose(evidence)
@@ -146,7 +146,7 @@ def test_connect_error_no_retry(monkeypatch, evidence):
         calls["n"] += 1
         raise httpx.ConnectError("connection refused")
 
-    monkeypatch.setattr(diagnostician.ollama, "chat", fake_chat)
+    monkeypatch.setattr(diagnostician._ollama_client, "chat", fake_chat)
     with pytest.raises(DiagnosticianInfraError) as exc_info:
         diagnose(evidence)
     assert exc_info.value.reason == "ollama_unavailable"
@@ -154,18 +154,25 @@ def test_connect_error_no_retry(monkeypatch, evidence):
     assert calls["n"] == 1
 
 
-def test_timeout_error_no_retry(monkeypatch, evidence):
+def test_timeout_raises_runtimeerror_not_infra_error(monkeypatch, evidence):
+    """F-001: A wall-clock timeout from the ollama client should surface as a
+    RuntimeError so verify's generic exception handler records it as a per-case
+    stage failure, NOT as DiagnosticianInfraError(reason="ollama_unavailable")
+    which would abort the entire batch. A single slow case must not stall every
+    other case in the iteration."""
     calls = {"n": 0}
 
     def fake_chat(**kwargs):
         calls["n"] += 1
         raise httpx.TimeoutException("read timeout")
 
-    monkeypatch.setattr(diagnostician.ollama, "chat", fake_chat)
-    with pytest.raises(DiagnosticianInfraError) as exc_info:
+    monkeypatch.setattr(diagnostician._ollama_client, "chat", fake_chat)
+    with pytest.raises(RuntimeError) as exc_info:
         diagnose(evidence)
-    assert exc_info.value.reason == "ollama_unavailable"
-    assert calls["n"] == 1
+    msg = str(exc_info.value)
+    assert "timed out" in msg
+    assert str(diagnostician._OLLAMA_CHAT_TIMEOUT_S) in msg
+    assert calls["n"] == 1  # no retry on timeout
 
 
 def test_ollama_response_error_no_retry(monkeypatch, evidence):
@@ -175,11 +182,128 @@ def test_ollama_response_error_no_retry(monkeypatch, evidence):
         calls["n"] += 1
         raise ollama.ResponseError("model not found", status_code=404)
 
-    monkeypatch.setattr(diagnostician.ollama, "chat", fake_chat)
+    monkeypatch.setattr(diagnostician._ollama_client, "chat", fake_chat)
     with pytest.raises(DiagnosticianInfraError) as exc_info:
         diagnose(evidence)
     assert exc_info.value.reason == "ollama_unavailable"
     assert calls["n"] == 1
+
+
+# ----- F-002: collect_evidence subprocess timeouts -----
+
+
+def _patch_subprocess_run_timeout_for(monkeypatch, target_argv0: str):
+    """Make subprocess.run raise TimeoutExpired when invoked with the given
+    argv[0] (e.g. "ffprobe", "exiftool", "ffmpeg"). Other invocations pass
+    through unchanged so unrelated calls aren't affected."""
+    import subprocess as real_subprocess
+    original = real_subprocess.run
+
+    def fake_run(argv, **kwargs):
+        if argv and argv[0] == target_argv0:
+            raise real_subprocess.TimeoutExpired(
+                cmd=argv, timeout=kwargs.get("timeout", 0)
+            )
+        return original(argv, **kwargs)
+
+    monkeypatch.setattr(diagnostician.subprocess, "run", fake_run)
+
+
+def test_collect_evidence_ffprobe_timeout_raises_runtime_error(
+    monkeypatch, tmp_path
+):
+    """F-002: ffprobe TimeoutExpired must be converted to RuntimeError naming
+    the tool, the timeout value, and the offending path so verify's generic
+    exception handler records a stage failure with operator-readable detail."""
+    deid = tmp_path / "UCD-FIL-001_video.mp4"
+    deid.write_bytes(b"stub")
+
+    _patch_subprocess_run_timeout_for(monkeypatch, "ffprobe")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        diagnostician.collect_evidence(deid)
+    msg = str(exc_info.value)
+    assert "ffprobe" in msg
+    assert "timed out" in msg
+    assert str(diagnostician._FFPROBE_TIMEOUT_S) in msg
+    assert str(deid) in msg
+
+
+def test_collect_evidence_exiftool_timeout_raises_runtime_error(
+    monkeypatch, tmp_path
+):
+    """F-002: exiftool TimeoutExpired path. ffprobe is allowed to succeed so
+    we exercise the second subprocess slot specifically."""
+    deid = tmp_path / "UCD-FIL-002_video.mp4"
+    deid.write_bytes(b"stub")
+
+    # ffprobe stub succeeds with a minimal valid response so we reach exiftool.
+    import subprocess as real_subprocess
+
+    def fake_run(argv, **kwargs):
+        if argv and argv[0] == "ffprobe":
+            return real_subprocess.CompletedProcess(
+                args=argv, returncode=0,
+                stdout='{"streams": [], "format": {}}', stderr="",
+            )
+        if argv and argv[0] == "exiftool":
+            raise real_subprocess.TimeoutExpired(
+                cmd=argv, timeout=kwargs.get("timeout", 0)
+            )
+        # Don't expect to reach ffmpeg in this test.
+        return real_subprocess.CompletedProcess(
+            args=argv, returncode=0, stdout="[]", stderr=""
+        )
+
+    monkeypatch.setattr(diagnostician.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        diagnostician.collect_evidence(deid)
+    msg = str(exc_info.value)
+    assert "exiftool" in msg
+    assert "timed out" in msg
+    assert str(diagnostician._EXIFTOOL_TIMEOUT_S) in msg
+    assert str(deid) in msg
+
+
+def test_collect_evidence_nullmux_timeout_raises_runtime_error(
+    monkeypatch, tmp_path
+):
+    """F-002: ffmpeg null-mux TimeoutExpired path. ffprobe + exiftool stubbed
+    to succeed so we reach the third subprocess slot."""
+    deid = tmp_path / "UCD-FIL-003_video.mp4"
+    deid.write_bytes(b"stub")
+
+    import subprocess as real_subprocess
+
+    def fake_run(argv, **kwargs):
+        if argv and argv[0] == "ffprobe":
+            return real_subprocess.CompletedProcess(
+                args=argv, returncode=0,
+                stdout='{"streams": [], "format": {}}', stderr="",
+            )
+        if argv and argv[0] == "exiftool":
+            return real_subprocess.CompletedProcess(
+                args=argv, returncode=0, stdout="[{}]", stderr=""
+            )
+        if argv and argv[0] == "ffmpeg":
+            raise real_subprocess.TimeoutExpired(
+                cmd=argv, timeout=kwargs.get("timeout", 0)
+            )
+        return real_subprocess.CompletedProcess(
+            args=argv, returncode=0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(diagnostician.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        diagnostician.collect_evidence(deid)
+    msg = str(exc_info.value)
+    assert "ffmpeg" in msg
+    assert "null-mux" in msg
+    assert "timed out" in msg
+    assert str(diagnostician._NULLMUX_TIMEOUT_S) in msg
+    assert str(deid) in msg
 
 
 def test_prompt_contains_evidence_blocks(monkeypatch, evidence):
@@ -190,7 +314,7 @@ def test_prompt_contains_evidence_blocks(monkeypatch, evidence):
         captured["messages"] = kwargs["messages"]
         return _make_response(_VALID_PASS)
 
-    monkeypatch.setattr(diagnostician.ollama, "chat", fake_chat)
+    monkeypatch.setattr(diagnostician._ollama_client, "chat", fake_chat)
     diagnose(evidence)
     prompt = captured["messages"][0]["content"]
     assert "ffprobe" in prompt

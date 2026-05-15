@@ -412,3 +412,40 @@ def test_login_without_session_secret_raises(client, monkeypatch):
             data={"username": "asarin", "password": "x"},
             follow_redirects=False,
         )
+
+
+# ----- F-009: APP_SESSION_SECRET minimum-length enforcement -----
+
+
+def test_session_secret_missing_raises_required_error(monkeypatch):
+    """F-009: unset / empty APP_SESSION_SECRET still fails closed (preserves
+    the pre-fix behavior tested by test_login_without_session_secret_raises)."""
+    from app.auth import _load_session_secret
+
+    monkeypatch.delenv("APP_SESSION_SECRET", raising=False)
+    with pytest.raises(RuntimeError, match="required"):
+        _load_session_secret()
+
+
+def test_session_secret_too_short_raises_min_length_error(monkeypatch):
+    """F-009: a 16-byte secret (under the 32-byte floor) must fail closed.
+    itsdangerous uses HMAC-SHA1 — short keys are brute-forceable offline
+    against any captured cookie, so silently accepting them is the bug."""
+    from app.auth import _load_session_secret
+
+    short_secret = "x" * 16
+    monkeypatch.setenv("APP_SESSION_SECRET", short_secret)
+    with pytest.raises(RuntimeError, match="≥32 bytes"):
+        _load_session_secret()
+
+
+def test_session_secret_valid_length_constructs_serializer(monkeypatch):
+    """F-009: a 32-byte secret passes validation and the serializer can be
+    constructed (round-trips a value through dumps/loads)."""
+    from app.auth import _load_session_secret, _session_serializer
+
+    monkeypatch.setenv("APP_SESSION_SECRET", "x" * 32)
+    assert _load_session_secret() == "x" * 32
+    serializer = _session_serializer()
+    token = serializer.dumps({"username": "asarin"})
+    assert serializer.loads(token) == {"username": "asarin"}

@@ -24,6 +24,34 @@ OLLAMA_MODEL = "qwen3:32b"
 OLLAMA_TEMPERATURE = 0
 OLLAMA_NUM_PREDICT = 512
 
+# Wall-clock cap on a single diagnostician chat() call. The ollama-python client
+# takes the timeout at Client construction (httpx-backed); there is no per-call
+# kwarg on chat(). We construct a module-level Client with this timeout and
+# route every call through it.
+#
+# Sizing: CLAUDE.md documents a 300 s per-call ceiling for qwen3:32b on the
+# Blackwell GB10. Measured warm steady-state on a representative diagnostician
+# prompt is ~14 s (probed 2026-05-15, model pinned). Cold-load could not be
+# directly measured because qwen3:32b is currently pinned UNTIL=Forever; we
+# allocate ~150 s of headroom on top of the documented 300 s ceiling to cover
+# (a) cold reload after an OOM eviction or operator-initiated unload, and
+# (b) GPU contention from a co-resident model. 450 s stays well under the
+# systemd TimeoutStartSec=30min so multiple cases can still process per
+# iteration if one runs long.
+_OLLAMA_CHAT_TIMEOUT_S = 450
+
+_FFPROBE_TIMEOUT_S = 60
+_EXIFTOOL_TIMEOUT_S = 60
+# Full-file decode pass for the null-mux. ~10× real-time on a ~60-min video
+# at typical NFS read rates leaves comfortable headroom for slow NAS or a
+# pathological codec path.
+_NULLMUX_TIMEOUT_S = 600
+
+# Module-level client so the timeout is applied to every chat() call without
+# reconstruction overhead. ollama.Client wraps httpx; passing a float assigns
+# it to all timeout phases (connect/read/write/pool).
+_ollama_client = ollama.Client(timeout=_OLLAMA_CHAT_TIMEOUT_S)
+
 
 @dataclass
 class DiagnosticianInfraError(Exception):
@@ -55,31 +83,43 @@ def collect_evidence(deid_path: Path) -> dict[str, Any]:
     if not deid_path.is_file():
         raise FileNotFoundError(f"deid artifact not found: {deid_path}")
 
-    ffprobe_result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_format",
-            "-show_streams",
-            "-of",
-            "json",
-            str(deid_path),
-        ],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        ffprobe_result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_format",
+                "-show_streams",
+                "-of",
+                "json",
+                str(deid_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_FFPROBE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"ffprobe timed out after {_FFPROBE_TIMEOUT_S}s on {deid_path}"
+        ) from e
     if ffprobe_result.returncode != 0:
         raise RuntimeError(
             f"ffprobe failed for {deid_path}: {ffprobe_result.stderr.strip()}"
         )
     ffprobe_json = json.loads(ffprobe_result.stdout)
 
-    exiftool_result = subprocess.run(
-        ["exiftool", "-j", str(deid_path)],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        exiftool_result = subprocess.run(
+            ["exiftool", "-j", str(deid_path)],
+            capture_output=True,
+            text=True,
+            timeout=_EXIFTOOL_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"exiftool timed out after {_EXIFTOOL_TIMEOUT_S}s on {deid_path}"
+        ) from e
     if exiftool_result.returncode != 0:
         raise RuntimeError(
             f"exiftool failed for {deid_path}: {exiftool_result.stderr.strip()}"
@@ -90,22 +130,28 @@ def collect_evidence(deid_path: Path) -> dict[str, Any]:
         else {}
     )
 
-    null_mux = subprocess.run(
-        [
-            "ffmpeg",
-            "-hide_banner",
-            "-nostats",
-            "-loglevel",
-            "info",
-            "-i",
-            str(deid_path),
-            "-f",
-            "null",
-            "-",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        null_mux = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-nostats",
+                "-loglevel",
+                "info",
+                "-i",
+                str(deid_path),
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_NULLMUX_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"ffmpeg null-mux timed out after {_NULLMUX_TIMEOUT_S}s on {deid_path}"
+        ) from e
 
     return {
         "ffprobe": ffprobe_json,
@@ -218,19 +264,31 @@ def build_prompt(evidence: dict[str, Any]) -> str:
 
 def _call_ollama(prompt: str) -> str:
     """One Ollama call. Returns the raw content string. Re-raises infra
-    exceptions (httpx.ConnectError, httpx.TimeoutException, ollama.ResponseError)
-    for the caller to translate into DiagnosticianInfraError.
+    exceptions (httpx.ConnectError, ollama.ResponseError) for the caller to
+    translate into DiagnosticianInfraError.
+
+    Wall-clock timeout: enforced by the module-level ``_ollama_client`` (see
+    ``_OLLAMA_CHAT_TIMEOUT_S``). On expiry httpx raises ``TimeoutException``,
+    which we re-raise as ``RuntimeError`` here so verify's generic exception
+    handler records it as a per-case stage failure rather than letting the
+    DiagnosticianInfraError "ollama_unavailable" path abort the entire batch.
+    A single slow case should not stall every other case in the iteration.
     """
-    response = ollama.chat(
-        model=OLLAMA_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        format="json",
-        options={
-            "temperature": OLLAMA_TEMPERATURE,
-            "num_predict": OLLAMA_NUM_PREDICT,
-        },
-        think=False,
-    )
+    try:
+        response = _ollama_client.chat(
+            model=OLLAMA_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            format="json",
+            options={
+                "temperature": OLLAMA_TEMPERATURE,
+                "num_predict": OLLAMA_NUM_PREDICT,
+            },
+            think=False,
+        )
+    except httpx.TimeoutException as e:
+        raise RuntimeError(
+            f"diagnostician timed out after {_OLLAMA_CHAT_TIMEOUT_S}s"
+        ) from e
     return response["message"]["content"]
 
 

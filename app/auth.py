@@ -59,6 +59,12 @@ SESSION_COOKIE_NAME = "app_session"
 SESSION_MAX_AGE_S = 8 * 3600
 PARTIAL_AUTH_MAX_AGE_S = 120
 
+# itsdangerous uses HMAC-SHA1; key entropy is the only thing standing between
+# a captured cookie and offline forgery. primer.md documents ≥32 bytes as the
+# operator-side requirement; this constant enforces it at startup so a
+# misconfigured env var fails closed instead of silently weakening sessions.
+_MIN_SESSION_SECRET_LEN = 32
+
 DSM_SUCCESS = "success"
 DSM_NEEDS_OTP = "needs_otp"
 DSM_INVALID = "invalid_credentials"
@@ -69,18 +75,25 @@ DSMResult = Literal["success", "needs_otp", "invalid_credentials"]
 # ----- signed-token helpers -----
 
 
-def _session_serializer() -> URLSafeTimedSerializer:
+def _load_session_secret() -> str:
+    """Read and validate ``APP_SESSION_SECRET``. Fails closed on missing /
+    empty / too-short values so a weak key never reaches the serializer."""
     secret = os.environ.get("APP_SESSION_SECRET")
     if not secret:
         raise RuntimeError("APP_SESSION_SECRET env var is required")
-    return URLSafeTimedSerializer(secret, salt="session")
+    if len(secret) < _MIN_SESSION_SECRET_LEN:
+        raise RuntimeError(
+            f"APP_SESSION_SECRET must be ≥{_MIN_SESSION_SECRET_LEN} bytes"
+        )
+    return secret
+
+
+def _session_serializer() -> URLSafeTimedSerializer:
+    return URLSafeTimedSerializer(_load_session_secret(), salt="session")
 
 
 def _partial_serializer() -> URLSafeTimedSerializer:
-    secret = os.environ.get("APP_SESSION_SECRET")
-    if not secret:
-        raise RuntimeError("APP_SESSION_SECRET env var is required")
-    return URLSafeTimedSerializer(secret, salt="partial-auth")
+    return URLSafeTimedSerializer(_load_session_secret(), salt="partial-auth")
 
 
 def encode_session(username: str) -> str:
