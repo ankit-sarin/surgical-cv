@@ -279,3 +279,88 @@ def test_record_malformed_quarantines_and_logs(tmp_path, app_env):
     assert items[0]["type"] == TYPE_MALFORMED_MARKER
     assert items[0]["case_id"] is None
     assert "JSON parse error" in items[0]["details"]
+
+
+# ----- F-006: stderr scrubbing into attention_items.details -----
+#
+# These tests use the dispatch helpers (_summarize_stderr) directly + the
+# end-to-end record_dispatch_outcome path. The contract: details renders as
+# "pipeline {stage} stage failed (returncode={rc}): {scrubbed_first_line}";
+# the scrubbed component must drop NAS paths to a placeholder-free first
+# line, and any PHI patterns in stderr must not survive into details.
+
+
+def test_dispatch_summary_first_line_only(tmp_path, app_env):
+    """Multi-line stderr collapses to the first non-empty line so the
+    SQLite row stays bounded. Trailing context lines (typically Python
+    tracebacks) end up in pipeline.log on the NAS, not attention_items."""
+    ensure_system_worker_user()
+    marker = _make_marker(tmp_path)
+    multiline = (
+        "ffmpeg: codec parameter invalid\n"
+        "  at offset 1234\n"
+        "  context: stream 0:0\n"
+    )
+    record_dispatch_outcome(
+        marker,
+        DispatchOutcome(
+            kind="hard_fail", stage="deid", returncode=1,
+            detail="ffmpeg: codec parameter invalid",
+        ),
+    )
+    items = _read_attention_items()
+    assert len(items) == 1
+    details = items[0]["details"]
+    # Structured shape preserved.
+    assert "pipeline deid stage failed" in details
+    assert "(returncode=1)" in details
+    # First-line content survives; trailing context lines do not.
+    assert "ffmpeg: codec parameter invalid" in details
+    assert "at offset" not in details
+    assert "context: stream" not in details
+
+
+def test_dispatch_scrubs_phi_patterns_from_stderr(tmp_path, app_env):
+    """If a pipeline subprocess somehow includes PHI-shaped tokens in its
+    stderr (a future bug class — exception messages echoing manifest
+    fields, etc.), those tokens must NOT survive into the surgeon-visible
+    attention_items.details. The scrub_text pass replaces them with
+    category placeholders."""
+    from app.worker.dispatch import _summarize_stderr
+
+    raw = (
+        "exception during deid: Patient: John Smith MRN 12345678 "
+        "phone (916) 555-1234"
+    )
+    summary = _summarize_stderr(raw)
+    # PHI tokens are gone.
+    assert "John Smith" not in summary
+    assert "12345678" not in summary
+    assert "(916) 555-1234" not in summary
+    # Placeholders are present so the operator sees the shape of the leak.
+    assert "<NAME>" in summary
+    assert "<MRN>" in summary
+    assert "<PHONE>" in summary
+    # Surrounding context survives.
+    assert "exception during deid" in summary
+
+
+def test_dispatch_empty_stderr_produces_empty_summary(tmp_path, app_env):
+    """No stderr → no detail. The wrapper formatting in failures.py still
+    renders the stage + returncode prefix; details just trail with an
+    empty colon-suffix."""
+    from app.worker.dispatch import _summarize_stderr
+
+    assert _summarize_stderr("") == ""
+    assert _summarize_stderr("   \n   \n") == ""
+
+
+def test_dispatch_summary_caps_at_200_chars(tmp_path, app_env):
+    """The first-line cap is the second defense (after first-line-only)
+    against an unbounded SQLite row. 200 chars is enough for a clear
+    single-sentence error without bloat."""
+    from app.worker.dispatch import _summarize_stderr
+
+    long_line = "x" * 500
+    summary = _summarize_stderr(long_line)
+    assert len(summary) <= 200

@@ -454,10 +454,14 @@ _NOTES_HARD_LIMIT = 1000
 
 # Co-located with scan_for_phi's categories. Humanized for the warning UI.
 # Privacy: these labels never accompany the matched substring — counts only.
+# Order here drives the rendered display order in _format_phi_warning.
 _PHI_CATEGORY_LABELS = {
     "mrn": "long numbers",
     "ssn": "SSN-like format",
     "date": "dates",
+    "name": "names",
+    "phone": "phone numbers",
+    "address": "addresses",
 }
 
 

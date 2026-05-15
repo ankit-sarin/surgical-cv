@@ -1,31 +1,54 @@
 """Intake-time PHI pattern detector.
 
 Used by the Intake form's Section 4 to surface a soft warning when the
-surgeon's free-text notes appear to contain identifiers. The actual
-post-submit PHI scrubbing runs later via gemma4:26b (Section 5 / pipeline-
-side) and will reuse the same category vocabulary defined here, so this
-module is the single source of truth for "what counts as a PHI category".
+surgeon's free-text notes appear to contain identifiers. The post-submit
+PHI scrubber referenced in v18 (planned: gemma4:26b) will reuse the same
+category vocabulary defined here.
 
-Category semantics (intentionally conservative — false positives are
-acceptable since the intake-time warning is non-blocking):
+Patterns live in ``pipeline/phi_patterns.py`` so both this module
+(intake-time soft warning) and ``pipeline/phi_redact.py`` (persistence-
+time scrubbing) share a single source of truth. ``pipeline/`` is the
+deeper layer; ``app/`` may import from it freely.
 
-  mrn:  unbroken runs of 7-10 digits. Also catches naked phone numbers;
-        the ambiguity is intentional v1 behavior since both warrant a
-        confirmation prompt.
-  ssn:  XXX-XX-XXXX with dash or whitespace separators. Unseparated 9-digit
-        runs fall through to mrn.
-  date: M/D/YYYY (and D/M/YYYY, etc.) with ``/``, ``-``, or ``.`` separators.
-        Year-only numbers (e.g. "2025") deliberately stay clean.
+Category semantics (intentionally permissive — false positives are
+acceptable since the intake-time warning is non-blocking; false negatives
+on names are NOT — bias the name heuristic toward catching more):
 
-Returns counts only — call sites must not surface the matched text itself."""
+  mrn:      unbroken runs of 7-10 digits. Catches naked phone numbers too.
+  ssn:      XXX-XX-XXXX with dash or whitespace separators.
+  date:     M/D/YYYY (with /, -, or .). Year-only stays clean.
+  name:     consecutive title-case tokens after Dr. / Pt. / Patient: /
+            MRN: / Mr. / Mrs. / Ms. prefixes.
+  phone:    separator-formatted 10-digit phones — distinct from naked mrn.
+  address:  number + title-case word(s) + street suffix. Minimal.
+
+Returns counts only — call sites must not surface the matched text itself.
+"""
 
 from __future__ import annotations
 
-import re
+from pipeline.phi_patterns import (
+    ADDRESS_PATTERN,
+    DATE_PATTERN,
+    MRN_PATTERN,
+    NAME_PATTERN,
+    PHONE_PATTERN,
+    SSN_PATTERN,
+)
 
-_MRN_PATTERN = re.compile(r"(?<!\d)\d{7,10}(?!\d)")
-_SSN_PATTERN = re.compile(r"(?<!\d)\d{3}[-\s]\d{2}[-\s]\d{4}(?!\d)")
-_DATE_PATTERN = re.compile(r"(?<!\d)\d{1,2}[/.\-]\d{1,2}[/.\-]\d{4}(?!\d)")
+
+# Stable category-name → compiled-pattern map. Iteration order is preserved
+# (Python ≥3.7) so call sites can rely on a deterministic count layout.
+# Order chosen to match user-mental-priority: MRN/SSN (most clearly PHI),
+# then date, then name, then phone (the new categories).
+_CATEGORIES: tuple[tuple[str, "object"], ...] = (
+    ("mrn", MRN_PATTERN),
+    ("ssn", SSN_PATTERN),
+    ("date", DATE_PATTERN),
+    ("name", NAME_PATTERN),
+    ("phone", PHONE_PATTERN),
+    ("address", ADDRESS_PATTERN),
+)
 
 
 def scan_for_phi(text: str | None) -> dict[str, int]:
@@ -34,13 +57,8 @@ def scan_for_phi(text: str | None) -> dict[str, int]:
     if not text:
         return {}
     counts: dict[str, int] = {}
-    mrn_count = len(_MRN_PATTERN.findall(text))
-    if mrn_count:
-        counts["mrn"] = mrn_count
-    ssn_count = len(_SSN_PATTERN.findall(text))
-    if ssn_count:
-        counts["ssn"] = ssn_count
-    date_count = len(_DATE_PATTERN.findall(text))
-    if date_count:
-        counts["date"] = date_count
+    for name, pattern in _CATEGORIES:
+        n = len(pattern.findall(text))
+        if n:
+            counts[name] = n
     return counts

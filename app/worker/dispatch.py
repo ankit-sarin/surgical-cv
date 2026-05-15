@@ -20,6 +20,7 @@ from typing import Protocol
 
 from pipeline.csv_io import CsvTable
 from pipeline.paths import NasPaths
+from pipeline.phi_redact import scrub_text
 from pipeline.schemas import (
     PIPELINE_STATE_COLUMNS,
     PipelineStateRow,
@@ -28,9 +29,13 @@ from pipeline.schemas import (
 
 from app.worker.scan import Marker
 
-# First 1KB of stderr is what attention_items.details captures — enough for
-# triage without blowing the SQLite row.
-_STDERR_TRUNC = 1024
+# F-006: attention_items.details is surgeon-visible (the Action Required tab
+# reads it). Raw pipeline stderr can carry NAS paths, manifest free-text
+# echoed back via exception messages, or other PHI-adjacent strings. Summarize
+# to a single first non-empty line of stderr, cap at 200 chars, scrub through
+# the PHI redactor. Full stderr stays in pipeline.log on the NAS (operator-
+# accessible file, not surgeon-visible) for debugging.
+_STDERR_FIRSTLINE_MAX = 200
 
 
 @dataclass(frozen=True)
@@ -96,8 +101,21 @@ class DispatchOutcome:
     detail: str = ""
 
 
-def _truncate(s: str) -> str:
-    return s[:_STDERR_TRUNC] if s else ""
+def _summarize_stderr(stderr: str) -> str:
+    """Extract a surgeon-visible summary from raw subprocess stderr: first
+    non-empty line, capped at 200 chars, run through the PHI redactor.
+    Empty stderr returns ``""``."""
+    if not stderr:
+        return ""
+    first_line = ""
+    for line in stderr.splitlines():
+        stripped = line.strip()
+        if stripped:
+            first_line = stripped
+            break
+    if not first_line:
+        return ""
+    return scrub_text(first_line[:_STDERR_FIRSTLINE_MAX])
 
 
 def _case_in_manifest(paths: NasPaths, case_id: str) -> bool:
@@ -181,7 +199,7 @@ def dispatch_marker(
             kind="hard_fail",
             stage="concat",
             returncode=rc.returncode,
-            detail=_truncate(rc.stderr),
+            detail=_summarize_stderr(rc.stderr),
         )
     state = _get_state_row(paths, marker.ucd_fil_id)
     if state is None or state.stage == Stage.intake:
@@ -209,7 +227,7 @@ def dispatch_marker(
             kind="hard_fail",
             stage="deid",
             returncode=rc.returncode,
-            detail=_truncate(rc.stderr),
+            detail=_summarize_stderr(rc.stderr),
         )
     state = _get_state_row(paths, marker.ucd_fil_id)
     if state is None or state.stage != Stage.deidentified:
@@ -245,7 +263,7 @@ def dispatch_marker(
             kind="soft_fail",
             stage="verify",
             returncode=rc.returncode,
-            detail=state.verification_notes or _truncate(rc.stderr),
+            detail=state.verification_notes or _summarize_stderr(rc.stderr),
         )
     return DispatchOutcome(
         kind="hard_fail",

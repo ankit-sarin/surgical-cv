@@ -302,8 +302,13 @@ def test_notes_textbox_placeholder_mentions_phi():
 # ----- Constants -----
 
 
-def test_phi_category_labels_cover_all_three_categories():
-    assert set(_PHI_CATEGORY_LABELS.keys()) == {"mrn", "ssn", "date"}
+def test_phi_category_labels_cover_all_six_categories():
+    """F-005: pattern coverage extended to name, phone, address. Each new
+    category needs a humanized label so _format_phi_warning has something
+    to render."""
+    assert set(_PHI_CATEGORY_LABELS.keys()) == {
+        "mrn", "ssn", "date", "name", "phone", "address",
+    }
 
 
 def test_phi_category_labels_humanize_mrn_to_long_numbers():

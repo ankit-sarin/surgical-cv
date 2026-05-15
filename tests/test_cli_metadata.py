@@ -313,14 +313,20 @@ def test_show_empty_notes_renders_as_empty_marker(tmp_path):
             assert "(empty)" in line
 
 
-def test_show_non_empty_notes_renders_value_not_empty_marker(tmp_path):
+def test_show_non_empty_notes_renders_redacted_with_length(tmp_path):
+    """F-004: notes never render in cleartext on stdout. The Notes: row
+    shows ``<redacted, length=N>`` so the operator can confirm a value
+    exists without seeing its content (journalctl-captured stdout is the
+    leak surface)."""
     paths = _make_paths(tmp_path)
-    _seed_manifest(paths, _manifest_row("UCD-FIL-001", notes="airway issues"))
+    notes_text = "airway issues"
+    _seed_manifest(paths, _manifest_row("UCD-FIL-001", notes=notes_text))
     _seed_state(paths, _state_row("UCD-FIL-001"))
 
     result = run("metadata", "UCD-FIL-001", env=_env(paths))
     assert result.returncode == 0
-    assert "airway issues" in result.stdout
+    assert notes_text not in result.stdout
+    assert f"<redacted, length={len(notes_text)}>" in result.stdout
     assert "(empty)" not in result.stdout
 
 
@@ -394,7 +400,8 @@ def _assert_no_mutation(paths: NasPaths, before_manifest: bytes) -> None:
         ("procedure_primary", "Sigmoidectomy"),
         ("approach", "Robotic"),
         ("indication", "Colorectal cancer"),
-        ("notes", "updated note text"),
+        # F-003: notes is operator-blocked; covered by
+        # test_edit_notes_blocked_at_dry_run / _at_commit below.
     ],
 )
 def test_dry_run_valid_for_each_editable_field(tmp_path, field, new_value):
@@ -478,23 +485,9 @@ def test_dry_run_empty_or_room_rejected(tmp_path, empty_value):
     _assert_no_mutation(paths, before)
 
 
-def test_dry_run_notes_accepts_empty_string(tmp_path):
-    paths, vocab_dir, before = _setup_dry_run(tmp_path)
-    result = run(
-        "metadata",
-        "UCD-FIL-001",
-        "--edit",
-        "notes",
-        "",
-        env=_env(paths, vocab_dir),
-    )
-    assert result.returncode == 0, f"stderr was:\n{result.stderr}"
-    out = result.stdout
-    assert "DRY RUN" in out
-    # Before is "initial note", After is empty → rendered as "(empty)".
-    assert "initial note" in out
-    assert "(empty)" in out
-    _assert_no_mutation(paths, before)
+# NOTE: previous test_dry_run_notes_accepts_empty_string removed in F-003.
+# notes is now operator-blocked at the CLI; coverage moved to
+# test_edit_notes_blocked_at_dry_run.
 
 
 def test_dry_run_picklist_missing_returns_2(tmp_path):
@@ -642,7 +635,8 @@ def test_dry_run_no_audit_log_written_across_failure_modes(tmp_path):
         ("procedure_primary", "Sigmoidectomy", "Other"),
         ("approach", "Robotic", "Open"),
         ("indication", "Colorectal cancer", "Diverticulitis"),
-        ("notes", "post-edit note", "initial note"),
+        # F-003: notes is operator-blocked; covered by
+        # test_edit_notes_blocked_at_commit below.
     ],
 )
 def test_commit_success_each_field(tmp_path, field, new_value, initial):
@@ -848,21 +842,10 @@ def test_commit_exception_inside_transaction_logs_exception_failure(
     assert "simulated tempfile rename failure" in e["details"]["error"]
 
 
-def test_commit_notes_field_writes_nudge_to_stderr(tmp_path):
-    paths, vocab_dir, _ = _setup_dry_run(tmp_path)
-    result = run(
-        "metadata",
-        "UCD-FIL-001",
-        "--edit",
-        "notes",
-        "new note",
-        "--confirm",
-        env=_env(paths, vocab_dir),
-    )
-    assert result.returncode == 0
-    assert "Committed." in result.stdout
-    assert "free-text field" in result.stderr
-    assert "surgeon-audit" in result.stderr
+# NOTE: previous test_commit_notes_field_writes_nudge_to_stderr removed in
+# F-003. The notes-commit nudge is unreachable now that notes is operator-
+# blocked at the CLI; the dead nudge constant + branch were also removed
+# from pipeline/commands/metadata.py.
 
 
 @pytest.mark.parametrize(
@@ -1160,3 +1143,72 @@ def test_dry_run_case_year_picklist_malformed_returns_2(tmp_path):
     assert paths.manifest_csv.read_bytes() == before_csv
     # Dry-run path — no audit entry.
     assert not paths.audit_log.exists()
+
+
+# ----- F-003: metadata --edit notes is operator-blocked -----
+
+
+def test_edit_notes_blocked_at_dry_run(tmp_path):
+    """F-003: --edit notes (no --confirm) refuses with policy message and
+    non-zero exit. No manifest read, no vocab load, no audit entry."""
+    paths, vocab_dir, before = _setup_dry_run(tmp_path)
+    result = run(
+        "metadata", "UCD-FIL-001", "--edit", "notes", "anything",
+        env=_env(paths, vocab_dir),
+    )
+    assert result.returncode == 1
+    assert "notes is not editable via CLI" in result.stderr
+    assert "surgeon interface" in result.stderr
+    _assert_no_mutation(paths, before)
+    assert not paths.audit_log.exists(), (
+        "blocked --edit notes must not create an audit log entry"
+    )
+
+
+def test_edit_notes_blocked_at_commit(tmp_path):
+    """F-003: --edit notes --confirm is refused at the same dispatch
+    short-circuit — the policy block runs before the commit branch."""
+    paths, vocab_dir, before = _setup_dry_run(tmp_path)
+    result = run(
+        "metadata", "UCD-FIL-001", "--edit", "notes", "anything", "--confirm",
+        env=_env(paths, vocab_dir),
+    )
+    assert result.returncode == 1
+    assert "notes is not editable via CLI" in result.stderr
+    _assert_no_mutation(paths, before)
+    assert not paths.audit_log.exists(), (
+        "blocked --edit notes --confirm must not create an audit log entry"
+    )
+
+
+def test_edit_notes_blocked_with_empty_string(tmp_path):
+    """The block is unconditional on the field — even an empty value is
+    refused. (Operators sometimes try to clear notes by editing to ''; the
+    policy says the field belongs to the surgeon UI either way.)"""
+    paths, vocab_dir, before = _setup_dry_run(tmp_path)
+    result = run(
+        "metadata", "UCD-FIL-001", "--edit", "notes", "", "--confirm",
+        env=_env(paths, vocab_dir),
+    )
+    assert result.returncode == 1
+    assert "notes is not editable via CLI" in result.stderr
+    _assert_no_mutation(paths, before)
+    assert not paths.audit_log.exists()
+
+
+# ----- F-004: --show notes regression — empty rendering preserved -----
+
+
+def test_show_empty_notes_still_renders_empty_marker(tmp_path):
+    """F-004 regression: empty notes still render as ``(empty)`` (not as
+    ``<redacted, length=0>``). Operators rely on this to see at a glance
+    whether a case has any notes at all."""
+    paths = _make_paths(tmp_path)
+    _seed_manifest(paths, _manifest_row("UCD-FIL-001", notes=""))
+    _seed_state(paths, _state_row("UCD-FIL-001"))
+    result = run("metadata", "UCD-FIL-001", env=_env(paths))
+    assert result.returncode == 0
+    assert "Notes:" in result.stdout
+    assert "(empty)" in result.stdout
+    assert "<redacted" not in result.stdout
+

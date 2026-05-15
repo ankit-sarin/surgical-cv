@@ -2,9 +2,11 @@
 case_manifest.csv.
 
 Three dispatch paths from run(args):
-  --show (or no flags)        read-only render of all 8 manifest fields
+  --show (or no flags)        read-only render of all 10 manifest fields
                               plus a one-line pipeline-stage summary.
-                              Silent on the audit log.
+                              Silent on the audit log. Notes are rendered
+                              as ``<redacted, length=N>`` (F-004) — the
+                              actual notes content never appears on stdout.
   --edit FIELD VALUE          dry-run: validates and previews "DRY RUN — ..."
                               with Before/After. Silent on the audit log.
   --edit FIELD VALUE --confirm commit path: opens CsvTable.transaction(),
@@ -13,8 +15,13 @@ Three dispatch paths from run(args):
                               one cell, and logs exactly one audit entry
                               with failure_kind ∈ {format, not_found,
                               validation, infra, exception} on failure or
-                              outcome="success" on commit. Notes-field
-                              commits also emit a soft nudge to stderr.
+                              outcome="success" on commit.
+
+F-003: ``--edit notes`` (with or without ``--confirm``) is refused at
+dispatch time. The CLI exists for operator-side schema corrections;
+free-text notes belong in the surgeon UI when it's built. The block is
+policy, not validation — non-zero exit, message on stderr, no audit
+entry, no manifest read.
 
 The five failure_kind values are metadata-specific and live alongside
 verify's existing discriminators in the audit log; audit.py's schema is
@@ -30,6 +37,7 @@ from argparse import Namespace
 from pipeline.audit import log_audit
 from pipeline.csv_io import CsvTable, RowNotFoundError
 from pipeline.paths import NasPaths, resolve_paths
+from pipeline.phi_redact import redact_field
 from pipeline.picklists import PicklistError, load_picklist_values
 from pipeline.schemas import (
     CASE_MANIFEST_COLUMNS,
@@ -37,6 +45,16 @@ from pipeline.schemas import (
     CaseManifestRow,
     PipelineStateRow,
     Stage,
+)
+
+
+# F-003: notes is operator-blocked at the CLI. The metadata CLI exists for
+# operator-side schema corrections (procedure type, OR room, case_year, etc.).
+# Free-text notes editing belongs in the surgeon UI when it's built; until
+# then the door stays closed so the audit-log redaction question never arises.
+_NOTES_BLOCKED_FIELD = "notes"
+_NOTES_BLOCKED_MSG = (
+    "notes is not editable via CLI; use the surgeon interface."
 )
 
 
@@ -81,11 +99,6 @@ _PICKLIST_LABELS: dict[str, str] = {
     "case_year": "case_years",
 }
 
-_NOTES_NUDGE = (
-    "note: free-text field; PHI screening happens downstream via surgeon-audit."
-)
-
-
 class _InfraError(Exception):
     """Vocab-load failure or other infrastructure-level problem. Exit 2."""
 
@@ -106,8 +119,17 @@ def run(args: Namespace, paths: NasPaths | None = None) -> int:
     Routes --edit + --confirm to the commit path, --edit alone to the
     dry-run preview, and the no-flag / --show form to the read-only
     render. See module docstring for the audit-log policy on each path.
+
+    F-003 short-circuit: --edit notes (with or without --confirm) is
+    refused at dispatch time before any manifest read, vocab load, or
+    audit write. The block is policy, not a validation error — no
+    audit entry, just a policy message on stderr and a non-zero exit.
     """
     if args.edit is not None:
+        field, _value = args.edit
+        if field == _NOTES_BLOCKED_FIELD:
+            print(f"error: {_NOTES_BLOCKED_MSG}", file=sys.stderr)
+            return 1
         if args.confirm:
             return _commit(args, paths)
         return _dry_run(args, paths)
@@ -459,10 +481,6 @@ def _commit(args: Namespace, paths: NasPaths | None) -> int:
         )
     )
 
-    # Step 8 — notes-field soft nudge.
-    if field == "notes":
-        print(_NOTES_NUDGE, file=sys.stderr)
-
     return 0
 
 
@@ -518,7 +536,11 @@ def _render_show(manifest_row: CaseManifestRow, state_row: PipelineStateRow | No
         ("Approach:", manifest_row.approach),
         ("Conversion:", conv_disp),
         ("Indication:", manifest_row.indication),
-        ("Notes:", manifest_row.notes if manifest_row.notes else "(empty)"),
+        # F-004: notes never render in cleartext on stdout — journalctl /
+        # operator terminal capture is the leak surface. Operators who need
+        # the actual text read case_manifest.csv directly (file access,
+        # not terminal output, doesn't hit journalctl).
+        ("Notes:", redact_field("notes", manifest_row.notes)),
     ]
     lines = [f"{label:<{_LABEL_WIDTH}}{value}" for label, value in rows]
     lines.append(_HRULE)
