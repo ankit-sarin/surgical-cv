@@ -129,7 +129,7 @@ def test_scope_from_request_with_surgeon_returns_scope(app_env):
 
 
 def test_fetch_segments_returns_empty_when_no_raw_folder(app_env):
-    """app_env's RAW_VIDEO_ROOT points at an empty tmpdir → no raw-sarin/
+    """app_env's PIPELINE_NAS_ROOT points at an empty tmpdir → no raw-sarin/
     → list_raw_segments returns [], fetch_segments returns []."""
     req = _make_request(token=encode_session("asarin"))
     assert fetch_segments(req) == []
@@ -137,7 +137,7 @@ def test_fetch_segments_returns_empty_when_no_raw_folder(app_env):
 
 def test_fetch_segments_returns_records_from_real_fs(app_env, tmp_path):
     """Drop a BDV file into raw-sarin/ under the test root; fetch finds it."""
-    raw_root_dir = Path(__import__("os").environ["RAW_VIDEO_ROOT"])
+    raw_root_dir = Path(__import__("os").environ["PIPELINE_NAS_ROOT"])
     folder = raw_root_dir / "raw-sarin"
     folder.mkdir()
     (folder / "capt0_20260102-082000.mp4").write_bytes(b"\x00" * 1000)

@@ -109,8 +109,10 @@ def app_env(tmp_path, monkeypatch):
         + "\n"
     )
 
-    # RAW_VIDEO_ROOT points to an empty tmp dir by default. Tests that need
-    # actual segments populate ``tmp_path/raw-<surgeon>/`` themselves.
+    # PIPELINE_NAS_ROOT points to an empty tmp dir by default (post-F-012:
+    # this is the single env var that selects the NAS root for both the
+    # marker writer and the worker scanner). Tests that need actual segments
+    # populate ``tmp_path/raw-<surgeon>/`` themselves.
     raw_root = tmp_path / "raw_root"
     raw_root.mkdir()
 
@@ -119,7 +121,7 @@ def app_env(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_DEV_MODE", "1")
     monkeypatch.setenv("NAS_DSM_URL", TEST_DSM_URL)
     monkeypatch.setenv("CASE_MANIFEST_PATH", str(manifest))
-    monkeypatch.setenv("RAW_VIDEO_ROOT", str(raw_root))
+    monkeypatch.setenv("PIPELINE_NAS_ROOT", str(raw_root))
     monkeypatch.delenv("MOCK_AUTH", raising=False)
     return db
 

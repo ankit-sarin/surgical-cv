@@ -20,12 +20,12 @@ from app.repos.segments import (
 
 
 def test_raw_root_honors_env(monkeypatch, tmp_path):
-    monkeypatch.setenv("RAW_VIDEO_ROOT", str(tmp_path))
+    monkeypatch.setenv("PIPELINE_NAS_ROOT", str(tmp_path))
     assert raw_root() == tmp_path
 
 
 def test_raw_root_default_when_env_unset(monkeypatch):
-    monkeypatch.delenv("RAW_VIDEO_ROOT", raising=False)
+    monkeypatch.delenv("PIPELINE_NAS_ROOT", raising=False)
     assert str(raw_root()) == "/mnt/nas"
 
 
@@ -161,7 +161,7 @@ def test_filesystem_reads_fresh_each_call(tmp_path):
 
 def test_filesystem_root_from_env(monkeypatch, tmp_path):
     _make_segment(tmp_path / "raw-sarin", "capt0_20260102-082000.mp4")
-    monkeypatch.setenv("RAW_VIDEO_ROOT", str(tmp_path))
+    monkeypatch.setenv("PIPELINE_NAS_ROOT", str(tmp_path))
     repo = FilesystemRawSegmentRepository()  # no explicit root
     assert len(repo.list_raw_segments("sarin")) == 1
 

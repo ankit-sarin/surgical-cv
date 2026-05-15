@@ -1,9 +1,12 @@
 """Raw-segment repository — surgeon's view of unclaimed BDV segments.
 
-v1 backing: ``os.scandir`` against ``/mnt/nas/raw-{folder_slug}/`` (override
-the root with ``RAW_VIDEO_ROOT``, same convention as ``APP_DB_PATH`` /
-``PIPELINE_PICKLIST_DIR``). Stateless reads. Tests use the in-memory fake
-rather than tmpdir-with-touch'd-files when they just need scope behavior.
+v1 backing: ``os.scandir`` against ``<nas_root>/raw-{folder_slug}/``. The
+NAS root is resolved by ``pipeline.paths.nas_root`` (env var
+``PIPELINE_NAS_ROOT``, default ``/mnt/nas``) — F-012 collapsed the prior
+``RAW_VIDEO_ROOT`` env var into ``PIPELINE_NAS_ROOT`` so a single env-var
+change moves both the marker writer and the worker scanner together.
+Stateless reads. Tests use the in-memory fake rather than
+tmpdir-with-touch'd-files when they just need scope behavior.
 
 The BDV recorder names segments ``capt0_YYYYMMDD-HHMMSS.mp4``. Once the
 pipeline claims a segment (Pass 1 concat), it's renamed to
@@ -21,18 +24,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
+from pipeline.paths import nas_root as _nas_root
 
-_DEFAULT_RAW_ROOT = Path("/mnt/nas")
 
 # Canonical, *unclaimed* form only — no suffix between timestamp and .mp4.
 _BDV_CANONICAL_RE = re.compile(r"^capt0_(\d{8})-(\d{6})\.mp4$")
 
 
 def raw_root() -> Path:
-    env = os.environ.get("RAW_VIDEO_ROOT")
-    if env:
-        return Path(env)
-    return _DEFAULT_RAW_ROOT
+    """Thin shim around ``pipeline.paths.nas_root`` retained for caller
+    compatibility (``app/repos/cases.py`` imports it). The body intentionally
+    holds no env-var read of its own — F-012 enforces the single-source rule."""
+    return _nas_root()
 
 
 @dataclass(frozen=True)

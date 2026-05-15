@@ -61,3 +61,31 @@ def test_path_or_string_root_both_accepted():
     p1 = resolve_paths("/x")
     p2 = resolve_paths(Path("/x"))
     assert p1 == p2
+
+
+# ----- F-012: RAW_VIDEO_ROOT no longer participates in resolution -----
+
+
+def test_raw_video_root_env_var_is_ignored(monkeypatch):
+    """F-012 regression guard: the retired RAW_VIDEO_ROOT env var must NOT
+    influence root resolution at any layer. If a future refactor accidentally
+    re-introduces the parallel reader, this test catches it before the
+    silent-drift failure mode (markers and worker scanner pointing at
+    different folders) can re-emerge in production.
+
+    Setup: set RAW_VIDEO_ROOT to a sentinel path, leave PIPELINE_NAS_ROOT
+    unset. Both the pipeline-side resolver and the app-side delegate must
+    return the default ``/mnt/nas`` — not the RAW_VIDEO_ROOT value."""
+    from app.repos.segments import raw_root as app_raw_root
+    from pipeline.paths import nas_root
+
+    monkeypatch.delenv("PIPELINE_NAS_ROOT", raising=False)
+    monkeypatch.setenv("RAW_VIDEO_ROOT", "/mnt/should-be-ignored")
+
+    # Pipeline-side resolver (used by the worker scanner via resolve_paths).
+    assert nas_root() == Path("/mnt/nas")
+    assert resolve_paths().root == Path("/mnt/nas")
+
+    # App-side delegate (used by app/repos/cases.py's marker writer). Same
+    # source of truth, same answer — that's the F-012 invariant.
+    assert app_raw_root() == Path("/mnt/nas")
