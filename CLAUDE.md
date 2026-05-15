@@ -124,19 +124,16 @@ Inspect or correct rows in `case_manifest.csv` via:
 
 Three modes:
 
-- **`--show` (default):** renders all 8 manifest fields plus a one-line pipeline-stage summary. Read-only; silent on the audit log.
-- **`--edit FIELD VALUE`:** validates the proposed value against field-specific rules (regex for `case_year`, non-empty `.strip()` for `or_room`, picklist membership for `procedure_name`/`approach`/`indication`, anything for `notes`). On success, renders a "DRY RUN" preview with `Before` / `After`. No state change; silent on the audit log.
+- **`--show` (default):** renders all 10 manifest fields (Spec J schema) plus a one-line pipeline-stage summary. Read-only; silent on the audit log. **F-004:** the `Notes:` row renders as `<redacted, length=N>` for non-empty values (or `(empty)`); the actual notes content never appears on stdout. Operators who need notes content read `case_manifest.csv` directly (file access, not terminal output, doesn't hit journalctl).
+- **`--edit FIELD VALUE`:** validates the proposed value against field-specific rules (regex for `case_year`, non-empty `.strip()` for `or_room`, picklist membership for `procedure_primary` / `procedure_additional` / `approach` / `conversion_target` / `indication`). On success, renders a "DRY RUN" preview with `Before` / `After`. No state change; silent on the audit log.
 - **`--edit FIELD VALUE --confirm`:** atomic commit via `CsvTable.transaction()`. The `before` value is captured from the locked snapshot inside the transaction (not from the pre-snapshot existence check). Writes one audit entry per invocation, success or failure.
 
-Six editable fields: `case_year`, `or_room`, `procedure_name`, `approach`, `indication`, `notes`.
+Editable fields (F-003): `case_year`, `or_room`, `procedure_primary`, `procedure_additional`, `approach`, `conversion_target`, `indication`. **`notes` is operator-blocked at the CLI** — `--edit notes` (with or without `--confirm`) refuses with a policy message, no audit entry, no manifest read. Free-text notes editing belongs in the surgeon UI when it's built.
 Two immutable fields (never editable via this CLI): `ucd_fil_id`, `surgeon`.
-
-Notes-field commits emit a soft PHI nudge to stderr:
-`note: free-text field; PHI screening happens downstream via surgeon-audit.`
 
 ### Vocabularies
 
-Picklist values for `procedure_name` / `approach` / `indication` / `case_year` are loaded from `app/db/seeds/picklists/*.json` at validation time. Override the directory with `PIPELINE_PICKLIST_DIR` (used by hermetic tests).
+Picklist values for `procedure_primary` / `procedure_additional` / `approach` / `conversion_target` / `indication` / `case_year` are loaded from `app/db/seeds/picklists/*.json` at validation time. Override the directory with `PIPELINE_PICKLIST_DIR` (used by hermetic tests).
 
 | Picklist seed | Specialty | Items | Notes |
 |------|------|------|------|
@@ -181,22 +178,41 @@ This is the only sanctioned write path. Direct `open(csv, "w")` is forbidden.
 ```
 surgical-cv/
 ├── CLAUDE.md              # Static architecture (this file)
-├── primer.md              # Working state (maintained by Claude Code)
+├── primer.md              # Working state (gitignored; maintained by Claude Code)
 ├── README.md              # Pipeline CLI quick reference
-├── requirements.txt
+├── requirements.txt       # Includes cryptography>=42 (added for F-008 Fernet wrap)
+├── docs/
+│   ├── audits/            # Codebase audits (immutable snapshots, not edited post-write)
+│   └── audit_deferrals.md # Findings from audits explicitly accepted vs. fixed
 ├── pipeline/              # CLI: concat, deid, verify, status, metadata
 │   ├── __main__.py
-│   ├── cli.py             # argparse + dispatch (incl. metadata --edit FIELD validation Action)
+│   ├── cli.py             # argparse + dispatch
 │   ├── schemas.py         # Pydantic v2 row models + stage machine + DiagnosticianVerdict
+│   │                      # Plus shared regexes (CASE_ID_RE, SURGEON_RE) and
+│   │                      # constants (VERIFICATION_NOTES_MAX) per F-016/F-017
 │   ├── csv_io.py          # locked atomic CSV I/O (CsvTable.transaction)
+│   ├── atomic_write.py    # F-014: shared mkstemp+fsync+os.replace primitive
+│   ├── bdv.py             # F-015: BDV_UNCLAIMED_RE / BDV_ANY_RE filename patterns
+│   ├── phi_patterns.py    # F-005: shared PHI regexes (mrn/ssn/date/name/phone/address)
+│   ├── phi_redact.py      # redact_field (presentation) + scrub_text (persistence)
 │   ├── audit.py           # JSONL audit logger (log_audit)
-│   ├── paths.py           # NAS path resolution
+│   ├── paths.py           # NAS path resolution (nas_root + resolve_paths)
 │   ├── ffmpeg.py          # ffmpeg_concat, ffmpeg_deid, ffprobe helpers
-│   ├── diagnostician.py   # qwen3:32b Ollama harness for verify (collect_evidence, diagnose)
-│   └── commands/          # one module per subcommand (concat, deid, verify, status, metadata)
-├── tests/                 # 263 tests covering all of the above
+│   ├── diagnostician.py   # qwen3:32b Ollama harness for verify (timeouts per F-001/F-002)
+│   └── commands/          # one module per subcommand
+│       ├── _shared.py     # F-033: format_cli_error helper
+│       └── (concat, deid, verify, status, metadata)
+├── app/                   # FastAPI + Gradio surgeon/admin app + Q3 worker
+│   ├── auth.py            # DSM auth + signed cookie (Fernet-wrapped partial-auth per F-008)
+│   ├── phi.py             # Intake-time PHI scanner (delegates to pipeline/phi_patterns)
+│   ├── repos/             # Case / Segment / Picklist repositories
+│   ├── intake/            # Surgeon intake validation + submit handler
+│   ├── worker/            # Q3 decoupled worker (lockfile/scan/dispatch/failures/main)
+│   └── db/                # SQLite app.db (gitignored) + admin CLI + init_db (umask per F-021)
+├── tests/                 # 826 tests covering all of the above
+├── deploy/systemd/        # Worker systemd unit + timer templates
 ├── bench/                 # model benchmark harness (pre-existing)
-├── scripts/               # Throwaway scripts (e.g. seed_intake.py — gitignored)
+├── scripts/               # Throwaway scripts (gitignored)
 ├── configs/               # Experiment configs (YAML) — placeholder
 ├── notebooks/             # Exploratory analysis — placeholder
 └── data/                  # gitignored — local caches, extracted frames
@@ -245,9 +261,10 @@ python -m pipeline verify --surgeon sarin            # batch verify deidentified
 python -m pipeline verify --surgeon sarin --case UCD-FIL-001  # single-case verify
 
 # Manifest metadata
-python -m pipeline metadata UCD-FIL-001                                          # show all 8 fields + stage
-python -m pipeline metadata UCD-FIL-001 --edit procedure_name "Sigmoidectomy"    # dry-run preview
-python -m pipeline metadata UCD-FIL-001 --edit procedure_name "Sigmoidectomy" --confirm  # commit
+python -m pipeline metadata UCD-FIL-001                                              # show all 10 fields + stage (notes redacted per F-004)
+python -m pipeline metadata UCD-FIL-001 --edit procedure_primary "Sigmoidectomy"     # dry-run preview
+python -m pipeline metadata UCD-FIL-001 --edit procedure_primary "Sigmoidectomy" --confirm  # commit
+# Note: --edit notes is operator-blocked (F-003); use the surgeon UI instead.
 
 # Frame extraction (example)
 python scripts/extract_frames.py --config configs/cholec80_frames.yaml
