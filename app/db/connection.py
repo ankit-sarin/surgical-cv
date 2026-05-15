@@ -29,6 +29,17 @@ def db_path() -> Path:
 
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
+    """Open a SQLite connection with foreign keys enforced and row access by name.
+
+    Caller owns the connection lifecycle and MUST close it explicitly via
+    ``try/finally: conn.close()`` (or ``contextlib.closing(connect())``).
+    ``with connect() as conn:`` only manages the transaction (commit on
+    success, rollback on exception) — it does NOT release the file
+    descriptor. Failing to close leaks one FD per call, invisible under
+    short-lived ``--once`` invocations but compounding under any long-lived
+    process (worker ``--daemon``, FastAPI service). See ``app/main.py:113-124``
+    and ``app/auth.py:lookup_active_user`` for the canonical pattern.
+    """
     if path is None:
         path = db_path()
     conn = sqlite3.connect(path)
