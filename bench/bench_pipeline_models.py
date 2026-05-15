@@ -28,7 +28,6 @@ BENCH_DIR = Path(__file__).resolve().parent
 CONFIGS_PATH = BENCH_DIR / "configs.json"
 CASES_PATH = BENCH_DIR / "test_cases.json"
 SCHEMAS_DIR = BENCH_DIR / "schemas"
-VOCAB_DIR = BENCH_DIR / "vocabularies"
 RESULTS_DIR = BENCH_DIR / "results"
 DB_PATH = RESULTS_DIR / "bench_results.sqlite"
 LOG_PATH = RESULTS_DIR / "run_log.txt"
@@ -203,8 +202,8 @@ def load_json(path: Path):
 def load_vocabularies() -> dict:
     return {
         "procedures": load_picklist_values("procedure", specialty="colorectal"),
-        "approaches": load_json(VOCAB_DIR / "approaches.json"),
-        "indications": load_json(VOCAB_DIR / "indications.json"),
+        "approaches": load_picklist_values("approach", specialty=None),
+        "indications": load_picklist_values("indication", specialty="colorectal"),
     }
 
 

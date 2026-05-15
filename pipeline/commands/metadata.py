@@ -21,13 +21,10 @@ verify's existing discriminators in the audit log; audit.py's schema is
 unchanged.
 """
 
-import json
-import os
 import re
 import sys
 import traceback
 from argparse import Namespace
-from pathlib import Path
 
 from pipeline.audit import log_audit
 from pipeline.csv_io import CsvTable, RowNotFoundError
@@ -50,10 +47,33 @@ _LABEL_WIDTH = 16
 _HRULE = "─" * 14
 _FAILED_NOTES_TRUNC = 80
 
+# Field name → picklist vocab name. case_year handles its own validation
+# branch (regex + vocab) but its vocab still comes from the same loader via
+# _PICKLIST_SPECIALTIES below, so it's NOT listed here.
 _PICKLIST_FIELDS: dict[str, str] = {
     "procedure_name": "procedure",
+    "approach": "approach",
+    "indication": "indication",
+}
+
+# Picklist vocab name → specialty for the seed-file lookup. All four routes
+# go through pipeline.picklists.load_picklist_values. specialty=None means
+# the universal `<field>.json` seed file. Hardcoded per field for now; when a
+# second specialty lands, refactor to a per-user lookup at validation time.
+_PICKLIST_SPECIALTIES: dict[str, str | None] = {
+    "procedure": "colorectal",
+    "approach": None,
+    "indication": "colorectal",
+    "case_year": None,
+}
+
+# Plural display labels for the user-facing validation error message. Keeps
+# the error English-natural now that all vocab names are singular.
+_PICKLIST_LABELS: dict[str, str] = {
+    "procedure": "procedures",
     "approach": "approaches",
     "indication": "indications",
+    "case_year": "case_years",
 }
 
 _NOTES_NUDGE = (
@@ -65,37 +85,14 @@ class _InfraError(Exception):
     """Vocab-load failure or other infrastructure-level problem. Exit 2."""
 
 
-def _project_root() -> Path:
-    return Path(__file__).resolve().parent.parent.parent
-
-
-def _vocab_dir() -> Path:
-    env = os.environ.get("PIPELINE_VOCAB_DIR")
-    return Path(env) if env else _project_root() / "bench" / "vocabularies"
-
-
 def _load_vocab(name: str) -> list[str]:
-    if name == "procedure":
-        try:
-            return load_picklist_values("procedure", specialty="colorectal")
-        except PicklistError as e:
-            raise _InfraError(str(e)) from e
-    path = _vocab_dir() / f"{name}.json"
-    if not path.exists():
-        raise _InfraError(f"vocab file missing: {path}")
+    if name not in _PICKLIST_SPECIALTIES:
+        raise _InfraError(f"unknown picklist field: {name}")
+    specialty = _PICKLIST_SPECIALTIES[name]
     try:
-        text = path.read_text()
-    except OSError as e:
-        raise _InfraError(f"vocab file unreadable at {path}: {e}") from e
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as e:
-        raise _InfraError(f"vocab file malformed at {path}: {e}") from e
-    if not isinstance(data, list) or not all(isinstance(x, str) for x in data):
-        raise _InfraError(
-            f"vocab file at {path} must be a JSON array of strings"
-        )
-    return data
+        return load_picklist_values(name, specialty=specialty)
+    except PicklistError as e:
+        raise _InfraError(str(e)) from e
 
 
 def run(args: Namespace, paths: NasPaths | None = None) -> int:
@@ -127,11 +124,12 @@ def _validate_field(field: str, value: str) -> str | None:
     if field == "case_year":
         if not _YEAR_RE.match(value):
             return f"expected 4-digit year, got {value!r}"
-        vocab = _load_vocab("case_years")
+        vocab = _load_vocab("case_year")
         if value not in vocab:
+            # Order-agnostic range display: vocab may be sorted DESC for UX.
             return (
                 f"year {value!r} not in case_years allowlist "
-                f"({len(vocab)} allowed: {vocab[0]}-{vocab[-1]})"
+                f"({len(vocab)} allowed: {min(vocab)}-{max(vocab)})"
             )
         return None
     if field == "or_room":
@@ -144,7 +142,7 @@ def _validate_field(field: str, value: str) -> str | None:
         vocab_name = _PICKLIST_FIELDS[field]
         vocab = _load_vocab(vocab_name)
         if value not in vocab:
-            label = vocab_name if vocab_name.endswith("s") else vocab_name + "s"
+            label = _PICKLIST_LABELS[vocab_name]
             return (
                 f"{value!r} not in {label} vocabulary "
                 f"({len(vocab)} allowed values)"

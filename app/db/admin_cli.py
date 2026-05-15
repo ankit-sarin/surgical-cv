@@ -364,126 +364,198 @@ def _seed_dir() -> Path:
     return Path(__file__).resolve().parent / "seeds" / "picklists"
 
 
-def _picklist_seed(conn: sqlite3.Connection, args) -> int:
-    specialty = args.specialty
-    row = conn.execute(
-        "SELECT 1 FROM specialties WHERE specialty_code = ?", (specialty,)
-    ).fetchone()
-    if row is None:
-        print(
-            f"error: specialty {specialty!r} does not exist", file=sys.stderr
-        )
-        return 1
+def _parse_seed_filename(path: Path) -> tuple[str, str | None] | None:
+    """Derive (field, specialty) from a seed-file path by parsing its JSON's
+    own ``field`` and ``specialty`` tags. Returns None on read/parse failure
+    or shape mismatch — caller decides how to surface the error."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    field = data.get("field")
+    specialty = data.get("specialty")
+    if not isinstance(field, str):
+        return None
+    if specialty is not None and not isinstance(specialty, str):
+        return None
+    return field, specialty
 
+
+def _discover_seed_files(seed_dir: Path, args) -> list[Path] | str:
+    """Return either a sorted list of seed-file Paths or a string error.
+
+    Mode dispatch:
+      --specialty CODE [--field F]  → files matching ``*_<code>.json`` (or just
+                                       ``<F>_<code>.json`` with --field)
+      --universal     [--field F]   → files whose JSON specialty is null (and
+                                       whose field matches --field if given)
+      --all                         → every ``*.json`` in the dir
+    """
+    if args.all:
+        files = sorted(seed_dir.glob("*.json"))
+        if not files:
+            return f"no seed files in {seed_dir}"
+        return files
+
+    if args.universal:
+        result: list[Path] = []
+        for path in sorted(seed_dir.glob("*.json")):
+            parsed = _parse_seed_filename(path)
+            if parsed is None:
+                continue
+            field, specialty = parsed
+            if specialty is not None:
+                continue
+            if args.field and field != args.field:
+                continue
+            result.append(path)
+        if not result:
+            if args.field:
+                return f"no universal seed file matching {args.field}.json in {seed_dir}"
+            return f"no universal seed files in {seed_dir}"
+        return result
+
+    # --specialty CODE path.
+    specialty = args.specialty
+    if args.field:
+        cand = seed_dir / f"{args.field}_{specialty}.json"
+        if not cand.exists():
+            return f"seed file not found: {cand}"
+        return [cand]
+    files = sorted(seed_dir.glob(f"*_{specialty}.json"))
+    if not files:
+        return (
+            f"no seed files matching *_{specialty}.json in {seed_dir}"
+        )
+    return files
+
+
+def _expected_filename(field: str, specialty: str | None) -> str:
+    return f"{field}_{specialty}.json" if specialty else f"{field}.json"
+
+
+def _ingest_file(
+    conn: sqlite3.Connection,
+    path: Path,
+    args,
+) -> tuple[int, int] | str:
+    """Validate one seed file and INSERT OR IGNORE its rows. Returns
+    (inserted, skipped) on success, or a string error."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        return f"failed to read {path}: {e}"
+
+    if not isinstance(data, dict):
+        return f"{path.name}: expected object at top level"
+
+    json_field = data.get("field")
+    json_specialty = data.get("specialty")
+    if not isinstance(json_field, str):
+        return f"{path.name}: JSON 'field' must be a string"
+    if json_specialty is not None and not isinstance(json_specialty, str):
+        return f"{path.name}: JSON 'specialty' must be a string or null"
+
+    # Filename must match field/specialty.
+    expected = _expected_filename(json_field, json_specialty)
+    if path.name != expected:
+        return (
+            f"{path.name}: filename does not match JSON field={json_field!r} "
+            f"specialty={json_specialty!r} (expected {expected})"
+        )
+
+    # If --specialty was used, refuse files whose specialty doesn't match.
+    if args.specialty and json_specialty != args.specialty:
+        return (
+            f"{path.name}: JSON specialty={json_specialty!r} does not match "
+            f"--specialty {args.specialty!r}"
+        )
+
+    # Specialty-scoped: FK pre-check.
+    if json_specialty is not None:
+        row = conn.execute(
+            "SELECT 1 FROM specialties WHERE specialty_code = ?",
+            (json_specialty,),
+        ).fetchone()
+        if row is None:
+            return (
+                f"{path.name}: specialty {json_specialty!r} does not exist"
+            )
+
+    values = data.get("values")
+    if not isinstance(values, list):
+        return f"{path.name}: 'values' must be a list"
+
+    inserted = 0
+    skipped = 0
+    ts = utcnow()
+    for i, item in enumerate(values):
+        if not isinstance(item, dict):
+            return f"{path.name}: values[{i}] must be an object"
+        for key in ("value", "display_label", "sort_order"):
+            if key not in item:
+                return f"{path.name}: values[{i}] missing {key!r}"
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO picklist_values "
+            "(field, value, display_label, sort_order, active, specialty, "
+            " created_at, created_by) "
+            "VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
+            (
+                json_field,
+                item["value"],
+                item["display_label"],
+                item["sort_order"],
+                json_specialty,
+                ts,
+                args.created_by,
+            ),
+        )
+        if cur.rowcount == 1:
+            inserted += 1
+        else:
+            skipped += 1
+    conn.commit()
+    return inserted, skipped
+
+
+def _picklist_seed(conn: sqlite3.Connection, args) -> int:
     seed_dir = _seed_dir()
     if not seed_dir.exists():
         print(f"error: seed dir not found: {seed_dir}", file=sys.stderr)
         return 1
 
-    if args.field:
-        candidates = [seed_dir / f"{args.field}_{specialty}.json"]
-        if not candidates[0].exists():
+    # --specialty mode requires the specialty to exist (pre-check, even though
+    # _ingest_file would catch it per-file — keeps the error early and clean).
+    if args.specialty:
+        row = conn.execute(
+            "SELECT 1 FROM specialties WHERE specialty_code = ?",
+            (args.specialty,),
+        ).fetchone()
+        if row is None:
             print(
-                f"error: seed file not found: {candidates[0]}", file=sys.stderr
-            )
-            return 1
-    else:
-        candidates = sorted(seed_dir.glob(f"*_{specialty}.json"))
-        if not candidates:
-            print(
-                f"error: no seed files matching *_{specialty}.json in {seed_dir}",
+                f"error: specialty {args.specialty!r} does not exist",
                 file=sys.stderr,
             )
             return 1
+
+    files_or_err = _discover_seed_files(seed_dir, args)
+    if isinstance(files_or_err, str):
+        print(f"error: {files_or_err}", file=sys.stderr)
+        return 1
+    candidates = files_or_err
 
     total_inserted = 0
     total_skipped = 0
     files_processed = 0
-    suffix = f"_{specialty}"
 
     for path in candidates:
-        stem = path.stem
-        if not stem.endswith(suffix):
-            print(
-                f"error: seed file {path.name} does not match "
-                f"*_{specialty}.json pattern",
-                file=sys.stderr,
-            )
+        result = _ingest_file(conn, path, args)
+        if isinstance(result, str):
+            print(f"error: {result}", file=sys.stderr)
             return 1
-        filename_field = stem[: -len(suffix)]
-
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError) as e:
-            print(f"error: failed to read {path}: {e}", file=sys.stderr)
-            return 1
-
-        if not isinstance(data, dict):
-            print(
-                f"error: {path}: expected object at top level", file=sys.stderr
-            )
-            return 1
-        json_field = data.get("field")
-        json_specialty = data.get("specialty")
-        if json_field != filename_field:
-            print(
-                f"error: {path.name}: JSON field={json_field!r} does not "
-                f"match filename field {filename_field!r}",
-                file=sys.stderr,
-            )
-            return 1
-        if json_specialty != specialty:
-            print(
-                f"error: {path.name}: JSON specialty={json_specialty!r} does "
-                f"not match --specialty {specialty!r}",
-                file=sys.stderr,
-            )
-            return 1
-        values = data.get("values")
-        if not isinstance(values, list):
-            print(
-                f"error: {path.name}: 'values' must be a list",
-                file=sys.stderr,
-            )
-            return 1
-
-        inserted = 0
-        skipped = 0
-        ts = utcnow()
-        for i, item in enumerate(values):
-            if not isinstance(item, dict):
-                print(
-                    f"error: {path.name}: values[{i}] must be an object",
-                    file=sys.stderr,
-                )
-                return 1
-            for key in ("value", "display_label", "sort_order"):
-                if key not in item:
-                    print(
-                        f"error: {path.name}: values[{i}] missing {key!r}",
-                        file=sys.stderr,
-                    )
-                    return 1
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO picklist_values "
-                "(field, value, display_label, sort_order, active, specialty, "
-                " created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
-                (
-                    filename_field,
-                    item["value"],
-                    item["display_label"],
-                    item["sort_order"],
-                    specialty,
-                    ts,
-                    args.created_by,
-                ),
-            )
-            if cur.rowcount == 1:
-                inserted += 1
-            else:
-                skipped += 1
-        conn.commit()
+        inserted, skipped = result
         print(f"{path.name}: inserted={inserted} skipped={skipped}")
         total_inserted += inserted
         total_skipped += skipped
@@ -567,7 +639,20 @@ def _build_parser() -> argparse.ArgumentParser:
     pdeact.add_argument("value")
 
     pseed = pl_sub.add_parser("seed")
-    pseed.add_argument("--specialty", required=True)
+    mode = pseed.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--specialty", help="seed *_<specialty>.json files"
+    )
+    mode.add_argument(
+        "--universal",
+        action="store_true",
+        help="seed <field>.json files (specialty=NULL)",
+    )
+    mode.add_argument(
+        "--all",
+        action="store_true",
+        help="seed every *.json in the seed dir (specialty-scoped + universal)",
+    )
     pseed.add_argument("--field")
     pseed.add_argument("--created-by", dest="created_by")
 

@@ -1,0 +1,22 @@
+{
+  "field": "case_year",
+  "specialty": null,
+  "values": [
+    { "value": "2030", "display_label": "2030", "sort_order": 10 },
+    { "value": "2029", "display_label": "2029", "sort_order": 20 },
+    { "value": "2028", "display_label": "2028", "sort_order": 30 },
+    { "value": "2027", "display_label": "2027", "sort_order": 40 },
+    { "value": "2026", "display_label": "2026", "sort_order": 50 },
+    { "value": "2025", "display_label": "2025", "sort_order": 60 },
+    { "value": "2024", "display_label": "2024", "sort_order": 70 },
+    { "value": "2023", "display_label": "2023", "sort_order": 80 },
+    { "value": "2022", "display_label": "2022", "sort_order": 90 },
+    { "value": "2021", "display_label": "2021", "sort_order": 100 },
+    { "value": "2020", "display_label": "2020", "sort_order": 110 },
+    { "value": "2019", "display_label": "2019", "sort_order": 120 },
+    { "value": "2018", "display_label": "2018", "sort_order": 130 },
+    { "value": "2017", "display_label": "2017", "sort_order": 140 },
+    { "value": "2016", "display_label": "2016", "sort_order": 150 },
+    { "value": "2015", "display_label": "2015", "sort_order": 160 }
+  ]
+}

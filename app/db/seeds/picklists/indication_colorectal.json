@@ -1,0 +1,17 @@
+{
+  "field": "indication",
+  "specialty": "colorectal",
+  "values": [
+    { "value": "Colorectal cancer", "display_label": "Colorectal cancer", "sort_order": 10 },
+    { "value": "Diverticulitis", "display_label": "Diverticulitis", "sort_order": 20 },
+    { "value": "Crohn's disease", "display_label": "Crohn's disease", "sort_order": 30 },
+    { "value": "Ulcerative colitis", "display_label": "Ulcerative colitis", "sort_order": 40 },
+    { "value": "Rectal prolapse", "display_label": "Rectal prolapse", "sort_order": 50 },
+    { "value": "Benign polyp", "display_label": "Benign polyp", "sort_order": 60 },
+    { "value": "Bowel obstruction", "display_label": "Bowel obstruction", "sort_order": 70 },
+    { "value": "Complex perianal disease", "display_label": "Complex perianal disease", "sort_order": 80 },
+    { "value": "Palliative stoma", "display_label": "Palliative stoma", "sort_order": 90 },
+    { "value": "Stoma takedown", "display_label": "Stoma takedown", "sort_order": 100 },
+    { "value": "Other", "display_label": "Other", "sort_order": 110 }
+  ]
+}

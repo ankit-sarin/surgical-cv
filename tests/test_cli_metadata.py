@@ -210,6 +210,10 @@ def _seed_picklist(
 
 
 def _seed_full_vocab(vocab_dir: Path) -> Path:
+    # _seed_vocab() writes legacy flat-list JSONs into vocab_dir; harmless
+    # dead writes after Spec D moved every field onto the picklist seed
+    # pattern. Kept so the three Spec A reframed picklist-failure tests
+    # still have a baseline vocab_dir to work from.
     _seed_vocab(
         vocab_dir,
         procedures=_DEFAULT_PROCEDURES,
@@ -217,9 +221,11 @@ def _seed_full_vocab(vocab_dir: Path) -> Path:
         indications=_DEFAULT_INDICATIONS,
         case_years=_DEFAULT_CASE_YEARS,
     )
-    _seed_picklist(
-        vocab_dir / "picklists", "procedure", "colorectal", _DEFAULT_PROCEDURES
-    )
+    pdir = vocab_dir / "picklists"
+    _seed_picklist(pdir, "procedure", "colorectal", _DEFAULT_PROCEDURES)
+    _seed_picklist(pdir, "approach", None, _DEFAULT_APPROACHES)
+    _seed_picklist(pdir, "indication", "colorectal", _DEFAULT_INDICATIONS)
+    _seed_picklist(pdir, "case_year", None, _DEFAULT_CASE_YEARS)
     return vocab_dir
 
 
@@ -1055,10 +1061,13 @@ def test_commit_exactly_one_audit_entry_per_invocation(tmp_path):
 )
 def test_dry_run_case_year_boundary(tmp_path, year, valid):
     paths, vocab_dir, before = _setup_dry_run(tmp_path)
-    # Seed the full real allowlist range (2015..2030) so boundaries match prod.
-    _seed_vocab(
-        vocab_dir,
-        case_years=[str(y) for y in range(2015, 2031)],
+    # Seed the full real allowlist range (2015..2030) so boundaries match
+    # prod. After Spec D case_year reads from the picklist seed pattern.
+    _seed_picklist(
+        vocab_dir / "picklists",
+        "case_year",
+        None,
+        [str(y) for y in range(2015, 2031)],
     )
     result = run(
         "metadata",
@@ -1084,7 +1093,12 @@ def test_dry_run_case_year_boundary(tmp_path, year, valid):
 
 def test_dry_run_format_failure_vs_allowlist_failure_distinct_messages(tmp_path):
     paths, vocab_dir, before = _setup_dry_run(tmp_path)
-    _seed_vocab(vocab_dir, case_years=[str(y) for y in range(2015, 2031)])
+    _seed_picklist(
+        vocab_dir / "picklists",
+        "case_year",
+        None,
+        [str(y) for y in range(2015, 2031)],
+    )
 
     # "20XX" fails the regex first — message mentions "4-digit year".
     bad_format = run(
@@ -1109,7 +1123,12 @@ def test_dry_run_format_failure_vs_allowlist_failure_distinct_messages(tmp_path)
 
 def test_commit_invalid_year_logs_validation_failure_kind(tmp_path):
     paths, vocab_dir, before_csv = _setup_dry_run(tmp_path)
-    _seed_vocab(vocab_dir, case_years=[str(y) for y in range(2015, 2031)])
+    _seed_picklist(
+        vocab_dir / "picklists",
+        "case_year",
+        None,
+        [str(y) for y in range(2015, 2031)],
+    )
 
     result = run(
         "metadata", "UCD-FIL-001", "--edit", "case_year", "1999", "--confirm",
@@ -1131,16 +1150,16 @@ def test_commit_invalid_year_logs_validation_failure_kind(tmp_path):
     assert "allowlist" in e["details"]["reason"]
 
 
-def test_commit_case_years_missing_logs_infra_failure(tmp_path):
+def test_commit_case_year_picklist_missing_logs_infra_failure(tmp_path):
     paths = _make_paths(tmp_path)
-    # Seed only 3 of 4 vocab files; case_years.json omitted.
-    vocab_dir = _seed_vocab(
-        tmp_path / "vocab",
-        procedures=_DEFAULT_PROCEDURES,
-        approaches=_DEFAULT_APPROACHES,
-        indications=_DEFAULT_INDICATIONS,
-        case_years=None,
-    )
+    # Build a vocab_dir with picklists for the other three fields seeded but
+    # case_year.json omitted, so validation hits the picklist-missing path.
+    vocab_dir = tmp_path / "vocab"
+    pdir = vocab_dir / "picklists"
+    _seed_picklist(pdir, "procedure", "colorectal", _DEFAULT_PROCEDURES)
+    _seed_picklist(pdir, "approach", None, _DEFAULT_APPROACHES)
+    _seed_picklist(pdir, "indication", "colorectal", _DEFAULT_INDICATIONS)
+    _seed_picklist(pdir, "case_year", None, None)  # missing
     _seed_manifest(paths, _manifest_row("UCD-FIL-001"))
     before_csv = paths.manifest_csv.read_bytes()
 
@@ -1151,8 +1170,8 @@ def test_commit_case_years_missing_logs_infra_failure(tmp_path):
     assert result.returncode == 2
     err = result.stderr
     assert "infrastructure error" in err
-    assert "vocab file missing" in err
-    assert "case_years.json" in err
+    assert "missing" in err
+    assert "case_year.json" in err
     assert paths.manifest_csv.read_bytes() == before_csv
 
     entries = _read_audit_entries(paths)
@@ -1163,15 +1182,14 @@ def test_commit_case_years_missing_logs_infra_failure(tmp_path):
     assert e["details"]["failure_kind"] == "infra"
 
 
-def test_dry_run_case_years_malformed_returns_2(tmp_path):
+def test_dry_run_case_year_picklist_malformed_returns_2(tmp_path):
     paths = _make_paths(tmp_path)
-    vocab_dir = _seed_vocab(
-        tmp_path / "vocab",
-        procedures=_DEFAULT_PROCEDURES,
-        approaches=_DEFAULT_APPROACHES,
-        indications=_DEFAULT_INDICATIONS,
-        case_years="{not valid json",
-    )
+    vocab_dir = tmp_path / "vocab"
+    pdir = vocab_dir / "picklists"
+    _seed_picklist(pdir, "procedure", "colorectal", _DEFAULT_PROCEDURES)
+    _seed_picklist(pdir, "approach", None, _DEFAULT_APPROACHES)
+    _seed_picklist(pdir, "indication", "colorectal", _DEFAULT_INDICATIONS)
+    _seed_picklist(pdir, "case_year", None, "{not valid json")
     _seed_manifest(paths, _manifest_row("UCD-FIL-001"))
     before_csv = paths.manifest_csv.read_bytes()
 
@@ -1182,7 +1200,7 @@ def test_dry_run_case_years_malformed_returns_2(tmp_path):
     assert result.returncode == 2
     assert "infrastructure error" in result.stderr
     assert "malformed" in result.stderr
-    assert "case_years.json" in result.stderr
+    assert "case_year.json" in result.stderr
     assert paths.manifest_csv.read_bytes() == before_csv
     # Dry-run path — no audit entry.
     assert not paths.audit_log.exists()

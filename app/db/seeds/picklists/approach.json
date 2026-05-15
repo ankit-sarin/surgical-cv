@@ -1,0 +1,10 @@
+{
+  "field": "approach",
+  "specialty": null,
+  "values": [
+    { "value": "Open", "display_label": "Open", "sort_order": 10 },
+    { "value": "Laparoscopic", "display_label": "Laparoscopic", "sort_order": 20 },
+    { "value": "Robotic", "display_label": "Robotic", "sort_order": 30 },
+    { "value": "Hybrid", "display_label": "Hybrid", "sort_order": 40 }
+  ]
+}

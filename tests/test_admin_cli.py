@@ -686,7 +686,10 @@ def test_picklist_seed_specialty_mismatch(db_with_specialty, tmp_path):
     env_seed = {**env, "PIPELINE_PICKLIST_DIR": str(seed_dir)}
     r = _admin("picklist", "seed", "--specialty", "colorectal", env=env_seed)
     assert r.returncode == 1
-    assert "JSON specialty" in r.stderr
+    # After Spec D the filename-vs-JSON check fires first (catches the same
+    # bug with a more diagnostic message).
+    assert "filename does not match" in r.stderr
+    assert "bariatric" in r.stderr
 
 
 def test_picklist_seed_malformed_json(db_with_specialty, tmp_path):
@@ -712,3 +715,194 @@ def test_picklist_seed_missing_required_key(db_with_specialty, tmp_path):
     r = _admin("picklist", "seed", "--specialty", "colorectal", env=env_seed)
     assert r.returncode == 1
     assert "sort_order" in r.stderr
+
+
+# ============================================================
+# picklist seed — --universal mode
+# ============================================================
+
+
+def _good_universal_seed(field: str, values: list[dict] | None = None) -> dict:
+    if values is None:
+        values = [
+            {"value": "Alpha", "display_label": "Alpha", "sort_order": 10},
+            {"value": "Beta", "display_label": "Beta", "sort_order": 20},
+        ]
+    return {"field": field, "specialty": None, "values": values}
+
+
+def test_picklist_seed_universal_inserts_all_rows(db_with_specialty, tmp_path):
+    db, env = db_with_specialty
+    seed_dir = tmp_path / "picklists"
+    _write_seed(seed_dir, "approach.json", _good_universal_seed("approach"))
+    env_seed = {**env, "PIPELINE_PICKLIST_DIR": str(seed_dir)}
+    r = _admin("picklist", "seed", "--universal", env=env_seed)
+    assert r.returncode == 0, r.stderr
+    rows = _query(
+        db, "SELECT value, specialty FROM picklist_values WHERE field='approach' ORDER BY sort_order"
+    )
+    assert [r["value"] for r in rows] == ["Alpha", "Beta"]
+    assert all(r["specialty"] is None for r in rows)
+
+
+def test_picklist_seed_universal_with_field_filter(db_with_specialty, tmp_path):
+    db, env = db_with_specialty
+    seed_dir = tmp_path / "picklists"
+    _write_seed(seed_dir, "approach.json", _good_universal_seed("approach"))
+    _write_seed(seed_dir, "case_year.json", _good_universal_seed("case_year"))
+    env_seed = {**env, "PIPELINE_PICKLIST_DIR": str(seed_dir)}
+    r = _admin(
+        "picklist", "seed", "--universal", "--field", "approach", env=env_seed,
+    )
+    assert r.returncode == 0, r.stderr
+    assert _query(db, "SELECT COUNT(*) AS n FROM picklist_values WHERE field='approach'")[0]["n"] == 2
+    assert _query(db, "SELECT COUNT(*) AS n FROM picklist_values WHERE field='case_year'")[0]["n"] == 0
+
+
+def test_picklist_seed_universal_no_files_returns_1(db_with_specialty, tmp_path):
+    _, env = db_with_specialty
+    seed_dir = tmp_path / "picklists"
+    seed_dir.mkdir()
+    env_seed = {**env, "PIPELINE_PICKLIST_DIR": str(seed_dir)}
+    r = _admin("picklist", "seed", "--universal", env=env_seed)
+    assert r.returncode == 1
+    assert "universal" in r.stderr.lower()
+
+
+def test_picklist_seed_universal_skips_specialty_scoped_files(
+    db_with_specialty, tmp_path
+):
+    """--universal must NOT ingest *_<specialty>.json files."""
+    db, env = db_with_specialty
+    seed_dir = tmp_path / "picklists"
+    _write_seed(seed_dir, "approach.json", _good_universal_seed("approach"))
+    _write_seed(
+        seed_dir, "procedure_colorectal.json",
+        {
+            "field": "procedure",
+            "specialty": "colorectal",
+            "values": [{"value": "X", "display_label": "X", "sort_order": 10}],
+        },
+    )
+    env_seed = {**env, "PIPELINE_PICKLIST_DIR": str(seed_dir)}
+    r = _admin("picklist", "seed", "--universal", env=env_seed)
+    assert r.returncode == 0, r.stderr
+    assert _query(db, "SELECT COUNT(*) AS n FROM picklist_values WHERE field='approach'")[0]["n"] == 2
+    assert _query(db, "SELECT COUNT(*) AS n FROM picklist_values WHERE field='procedure'")[0]["n"] == 0
+
+
+def test_picklist_seed_universal_filename_mismatch_rejected(
+    db_with_specialty, tmp_path
+):
+    """JSON specialty=null but the filename has a specialty suffix → caught."""
+    _, env = db_with_specialty
+    seed_dir = tmp_path / "picklists"
+    # Write under a misleading name; --all forces ingestion so the validator
+    # catches the mismatch.
+    _write_seed(seed_dir, "approach_colorectal.json", _good_universal_seed("approach"))
+    env_seed = {**env, "PIPELINE_PICKLIST_DIR": str(seed_dir)}
+    r = _admin("picklist", "seed", "--all", env=env_seed)
+    assert r.returncode == 1
+    assert "filename does not match" in r.stderr
+
+
+# ============================================================
+# picklist seed — --all mode
+# ============================================================
+
+
+def test_picklist_seed_all_ingests_both_modes(db_with_specialty, tmp_path):
+    db, env = db_with_specialty
+    seed_dir = tmp_path / "picklists"
+    _write_seed(seed_dir, "procedure_colorectal.json", _good_seed("procedure", "colorectal"))
+    _write_seed(seed_dir, "approach.json", _good_universal_seed("approach"))
+    _write_seed(seed_dir, "case_year.json", _good_universal_seed("case_year"))
+    env_seed = {**env, "PIPELINE_PICKLIST_DIR": str(seed_dir)}
+    r = _admin("picklist", "seed", "--all", env=env_seed)
+    assert r.returncode == 0, r.stderr
+    assert _query(db, "SELECT COUNT(*) AS n FROM picklist_values WHERE field='procedure'")[0]["n"] == 3
+    assert _query(db, "SELECT COUNT(*) AS n FROM picklist_values WHERE field='approach'")[0]["n"] == 2
+    assert _query(db, "SELECT COUNT(*) AS n FROM picklist_values WHERE field='case_year'")[0]["n"] == 2
+
+
+def test_picklist_seed_all_idempotent(db_with_specialty, tmp_path):
+    _, env = db_with_specialty
+    seed_dir = tmp_path / "picklists"
+    _write_seed(seed_dir, "procedure_colorectal.json", _good_seed("procedure", "colorectal"))
+    _write_seed(seed_dir, "approach.json", _good_universal_seed("approach"))
+    env_seed = {**env, "PIPELINE_PICKLIST_DIR": str(seed_dir)}
+    r1 = _admin("picklist", "seed", "--all", env=env_seed)
+    assert r1.returncode == 0
+    r2 = _admin("picklist", "seed", "--all", env=env_seed)
+    assert r2.returncode == 0
+    # All 5 rows already exist → all skipped.
+    assert "inserted=0" in r2.stdout
+    assert "skipped=" in r2.stdout
+
+
+def test_picklist_seed_all_empty_dir_returns_1(db_with_specialty, tmp_path):
+    _, env = db_with_specialty
+    seed_dir = tmp_path / "picklists"
+    seed_dir.mkdir()
+    env_seed = {**env, "PIPELINE_PICKLIST_DIR": str(seed_dir)}
+    r = _admin("picklist", "seed", "--all", env=env_seed)
+    assert r.returncode == 1
+    assert "no seed files" in r.stderr
+
+
+# ============================================================
+# picklist seed — mode argument enforcement
+# ============================================================
+
+
+def test_picklist_seed_requires_a_mode(db_with_specialty):
+    _, env = db_with_specialty
+    r = _admin("picklist", "seed", env=env)
+    assert r.returncode != 0
+    # argparse error mentions --specialty / --universal / --all
+    err = r.stderr
+    assert "--specialty" in err or "--universal" in err or "--all" in err
+
+
+def test_picklist_seed_specialty_and_universal_mutually_exclusive(
+    db_with_specialty,
+):
+    _, env = db_with_specialty
+    r = _admin(
+        "picklist", "seed", "--specialty", "colorectal", "--universal",
+        env=env,
+    )
+    assert r.returncode != 0
+    assert "not allowed with" in r.stderr or "argument" in r.stderr
+
+
+def test_picklist_seed_universal_and_all_mutually_exclusive(db_with_specialty):
+    _, env = db_with_specialty
+    r = _admin("picklist", "seed", "--universal", "--all", env=env)
+    assert r.returncode != 0
+
+
+# ============================================================
+# metadata.py: data-driven _PICKLIST_SPECIALTIES routing
+# ============================================================
+
+
+def test_metadata_specialties_map_routes_approach_to_universal():
+    """Approach must resolve via the universal `approach.json` seed file."""
+    from pipeline.commands.metadata import _PICKLIST_SPECIALTIES
+    assert _PICKLIST_SPECIALTIES["approach"] is None
+
+
+def test_metadata_specialties_map_routes_case_year_to_universal():
+    from pipeline.commands.metadata import _PICKLIST_SPECIALTIES
+    assert _PICKLIST_SPECIALTIES["case_year"] is None
+
+
+def test_metadata_specialties_map_routes_indication_to_colorectal():
+    from pipeline.commands.metadata import _PICKLIST_SPECIALTIES
+    assert _PICKLIST_SPECIALTIES["indication"] == "colorectal"
+
+
+def test_metadata_specialties_map_routes_procedure_to_colorectal():
+    from pipeline.commands.metadata import _PICKLIST_SPECIALTIES
+    assert _PICKLIST_SPECIALTIES["procedure"] == "colorectal"
