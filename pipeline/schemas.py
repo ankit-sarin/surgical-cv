@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from enum import Enum
 from typing import Literal
@@ -10,8 +11,10 @@ CASE_MANIFEST_COLUMNS: tuple[str, ...] = (
     "surgeon",
     "case_year",
     "or_room",
-    "procedure_name",
+    "procedure_primary",
+    "procedure_additional",
     "approach",
+    "conversion_target",
     "indication",
     "notes",
 )
@@ -59,8 +62,13 @@ class CaseManifestRow(BaseModel):
     surgeon: str = Field(min_length=1)
     case_year: str = Field(pattern=r"^\d{4}$")
     or_room: str = Field(min_length=1)
-    procedure_name: str = Field(min_length=1)
+    procedure_primary: str = Field(min_length=1)
+    # JSON-encoded array of strings on disk; surfaced as list[str] in memory.
+    # Empty disk value ↔ [].
+    procedure_additional: list[str] = Field(default_factory=list)
     approach: str = Field(min_length=1)
+    # Empty string on disk and in memory = "no conversion".
+    conversion_target: str = ""
     indication: str = Field(min_length=1)
     notes: str = ""
 
@@ -73,12 +81,49 @@ class CaseManifestRow(BaseModel):
             raise ValueError("surgeon must not contain whitespace")
         return v
 
+    @field_validator("procedure_additional")
+    @classmethod
+    def _additionals_nonempty_strings(cls, v: list[str]) -> list[str]:
+        for s in v:
+            if not isinstance(s, str) or not s:
+                raise ValueError(
+                    "procedure_additional elements must be non-empty strings"
+                )
+        return v
+
     @classmethod
     def from_csv_dict(cls, d: dict) -> "CaseManifestRow":
-        return cls(**{col: d.get(col, "") for col in CASE_MANIFEST_COLUMNS})
+        payload = {col: d.get(col, "") for col in CASE_MANIFEST_COLUMNS}
+        raw_additional = payload["procedure_additional"]
+        if isinstance(raw_additional, str):
+            if raw_additional == "":
+                payload["procedure_additional"] = []
+            else:
+                try:
+                    parsed = json.loads(raw_additional)
+                except json.JSONDecodeError as e:
+                    raise ValueError(
+                        f"procedure_additional is not valid JSON: {e}"
+                    ) from e
+                if not isinstance(parsed, list):
+                    raise ValueError(
+                        "procedure_additional must be a JSON array, "
+                        f"got {type(parsed).__name__}"
+                    )
+                payload["procedure_additional"] = parsed
+        return cls(**payload)
 
     def to_csv_dict(self) -> dict:
-        return {col: getattr(self, col) for col in CASE_MANIFEST_COLUMNS}
+        out: dict = {}
+        for col in CASE_MANIFEST_COLUMNS:
+            val = getattr(self, col)
+            if col == "procedure_additional":
+                # Empty list rounds to empty string on disk (readability win);
+                # any non-empty list serializes as a compact JSON array.
+                out[col] = "" if not val else json.dumps(val)
+            else:
+                out[col] = val
+        return out
 
 
 class PipelineStateRow(BaseModel):

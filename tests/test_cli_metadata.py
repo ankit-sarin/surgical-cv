@@ -22,8 +22,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _EDITABLE_FIELDS = (
     "case_year",
     "or_room",
-    "procedure_name",
+    "procedure_primary",
+    "procedure_additional",
     "approach",
+    "conversion_target",
     "indication",
     "notes",
 )
@@ -57,8 +59,10 @@ def _manifest_row(
     surgeon="sarin",
     case_year="2026",
     or_room="OR4",
-    procedure_name="Sigmoidectomy",
+    procedure_primary="Sigmoidectomy",
+    procedure_additional=None,
     approach="Robotic",
+    conversion_target="",
     indication="Diverticulitis",
     notes="",
 ):
@@ -67,8 +71,10 @@ def _manifest_row(
         surgeon=surgeon,
         case_year=case_year,
         or_room=or_room,
-        procedure_name=procedure_name,
+        procedure_primary=procedure_primary,
+        procedure_additional=procedure_additional or [],
         approach=approach,
+        conversion_target=conversion_target,
         indication=indication,
         notes=notes,
     )
@@ -361,7 +367,7 @@ def _setup_dry_run(tmp_path: Path) -> tuple[NasPaths, Path, bytes]:
             "UCD-FIL-001",
             case_year="2026",
             or_room="OR4",
-            procedure_name="Other",
+            procedure_primary="Other",
             approach="Open",
             indication="Diverticulitis",
             notes="initial note",
@@ -385,7 +391,7 @@ def _assert_no_mutation(paths: NasPaths, before_manifest: bytes) -> None:
     [
         ("case_year", "2027"),
         ("or_room", "OR12"),
-        ("procedure_name", "Sigmoidectomy"),
+        ("procedure_primary", "Sigmoidectomy"),
         ("approach", "Robotic"),
         ("indication", "Colorectal cancer"),
         ("notes", "updated note text"),
@@ -421,14 +427,14 @@ def test_dry_run_bad_picklist_value_rejected(tmp_path):
         "metadata",
         "UCD-FIL-001",
         "--edit",
-        "procedure_name",
+        "procedure_primary",
         "Floogle",
         env=_env(paths, vocab_dir),
     )
     assert result.returncode == 1
     err = result.stderr
     assert "validation error" in err
-    assert "procedure_name" in err
+    assert "procedure_primary" in err
     assert "Floogle" in err
     assert "procedures vocabulary" in err
     _assert_no_mutation(paths, before)
@@ -503,7 +509,7 @@ def test_dry_run_picklist_missing_returns_2(tmp_path):
         "metadata",
         "UCD-FIL-001",
         "--edit",
-        "procedure_name",
+        "procedure_primary",
         "Sigmoidectomy",
         env=_env(paths, vocab_dir),
     )
@@ -528,7 +534,7 @@ def test_dry_run_picklist_malformed_returns_2(tmp_path):
         "metadata",
         "UCD-FIL-001",
         "--edit",
-        "procedure_name",
+        "procedure_primary",
         "Sigmoidectomy",
         env=_env(paths, vocab_dir),
     )
@@ -607,7 +613,7 @@ def test_dry_run_no_audit_log_written_across_failure_modes(tmp_path):
         # bad year
         ("UCD-FIL-001", "case_year", "20XX"),
         # bad picklist
-        ("UCD-FIL-001", "procedure_name", "Floogle"),
+        ("UCD-FIL-001", "procedure_primary", "Floogle"),
         # empty or_room
         ("UCD-FIL-001", "or_room", "   "),
     ]
@@ -633,7 +639,7 @@ def test_dry_run_no_audit_log_written_across_failure_modes(tmp_path):
     [
         ("case_year", "2027", "2026"),
         ("or_room", "OR12", "OR4"),
-        ("procedure_name", "Sigmoidectomy", "Other"),
+        ("procedure_primary", "Sigmoidectomy", "Other"),
         ("approach", "Robotic", "Open"),
         ("indication", "Colorectal cancer", "Diverticulitis"),
         ("notes", "post-edit note", "initial note"),
@@ -707,7 +713,7 @@ def test_commit_bad_picklist_logs_validation_failure(tmp_path):
         "metadata",
         "UCD-FIL-001",
         "--edit",
-        "procedure_name",
+        "procedure_primary",
         "Floogle",
         "--confirm",
         env=_env(paths, vocab_dir),
@@ -722,7 +728,7 @@ def test_commit_bad_picklist_logs_validation_failure(tmp_path):
     assert e["outcome"] == "failure"
     assert e["case"] == "UCD-FIL-001"
     assert e["details"]["failure_kind"] == "validation"
-    assert e["details"]["field"] == "procedure_name"
+    assert e["details"]["field"] == "procedure_primary"
     assert e["details"]["value"] == "Floogle"
 
 
@@ -785,7 +791,7 @@ def test_commit_picklist_missing_logs_infra_failure(tmp_path):
         "metadata",
         "UCD-FIL-001",
         "--edit",
-        "procedure_name",
+        "procedure_primary",
         "Sigmoidectomy",
         "--confirm",
         env=_env(paths, vocab_dir),
@@ -864,7 +870,7 @@ def test_commit_notes_field_writes_nudge_to_stderr(tmp_path):
     [
         ("case_year", "2027"),
         ("or_room", "OR12"),
-        ("procedure_name", "Sigmoidectomy"),
+        ("procedure_primary", "Sigmoidectomy"),
         ("approach", "Robotic"),
         ("indication", "Colorectal cancer"),
     ],
@@ -983,7 +989,7 @@ def test_commit_exactly_one_audit_entry_per_invocation(tmp_path):
         "metadata",
         "UCD-FIL-001",
         "--edit",
-        "procedure_name",
+        "procedure_primary",
         "Floogle",
         "--confirm",
         env=_env(paths, vocab_dir),

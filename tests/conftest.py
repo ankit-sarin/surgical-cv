@@ -16,12 +16,15 @@ TEST_DSM_URL = "https://dsm.test.invalid/webapi/auth.cgi"
 SEED_TS = "2026-05-15T00:00:00+00:00"
 
 _CASE_MANIFEST_HEADER = (
-    "ucd_fil_id,surgeon,case_year,or_room,procedure_name,approach,indication,notes"
+    "ucd_fil_id,surgeon,case_year,or_room,"
+    "procedure_primary,procedure_additional,"
+    "approach,conversion_target,"
+    "indication,notes"
 )
 _DEFAULT_CASE_MANIFEST_ROWS = (
-    "UCD-FIL-001,sarin,2026,OR 4,Low anterior resection,Robotic,Colorectal cancer,",
-    "UCD-FIL-002,sarin,2026,OR 4,Right hemicolectomy,Robotic,Colorectal cancer,",
-    "UCD-FIL-099,miller,2026,OR 1,Sigmoidectomy,Open,Colorectal cancer,",
+    "UCD-FIL-001,sarin,2026,OR 4,Low anterior resection,,Robotic,,Colorectal cancer,",
+    "UCD-FIL-002,sarin,2026,OR 4,Right hemicolectomy,,Robotic,,Colorectal cancer,",
+    "UCD-FIL-099,miller,2026,OR 1,Sigmoidectomy,,Open,,Colorectal cancer,",
 )
 
 

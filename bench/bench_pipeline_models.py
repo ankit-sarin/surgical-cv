@@ -65,12 +65,12 @@ SURGEON_SCHEMA_TEXT = """{
   "properties": {
     "case_manifest": {
       "type": "object",
-      "required": ["surgeon", "case_date", "or_room", "procedure_name", "approach", "indication", "notes"],
+      "required": ["surgeon", "case_date", "or_room", "procedure_primary", "approach", "indication", "notes"],
       "properties": {
         "surgeon": {"type": ["string", "null"]},
         "case_date": {"type": ["string", "null"], "pattern": "^\\\\d{4}-\\\\d{2}-\\\\d{2}$"},
         "or_room": {"type": ["string", "null"]},
-        "procedure_name": {"type": ["string", "null"]},
+        "procedure_primary": {"type": ["string", "null"]},
         "approach": {"type": ["string", "null"]},
         "indication": {"type": ["string", "null"]},
         "notes": {"type": ["string", "null"]}
@@ -120,7 +120,7 @@ SURGEON_SYSTEM_PROMPT = f"""You are an intake assistant for a colorectal-surgery
 
 Allowed values (use these exact strings — never paraphrase, never invent new ones):
 
-procedure_name (one of):
+procedure_primary (one of):
 {json.dumps(PROCEDURES)}
 
 approach (one of):
@@ -131,8 +131,8 @@ indication (one of):
 
 Rules:
 - Map common abbreviations and synonyms to the canonical vocabulary string. Examples: "LAR" -> "Low anterior resection"; "right hemi" -> "Right hemicolectomy"; "TPC with IPAA" -> "Total proctocolectomy with IPAA"; "lap" -> "Laparoscopic"; "robotic-assisted" -> "Robotic". Map indications by primary diagnosis: "rectal cancer" / "sigmoid cancer" / "colon cancer" -> "Colorectal cancer"; "UC" -> "Ulcerative colitis".
-- If a procedure does not map to any vocabulary item, set procedure_name = "Other" and put the spoken term in notes.
-- Each case is one row. If the surgeon mentions a secondary procedure (e.g., "plus diverting loop ileostomy"), keep procedure_name as the primary procedure and put the secondary in notes.
+- If a procedure does not map to any vocabulary item, set procedure_primary = "Other" and put the spoken term in notes.
+- Each case is one row. If the surgeon mentions a secondary procedure (e.g., "plus diverting loop ileostomy"), keep procedure_primary as the primary procedure and put the secondary in notes.
 - Resolve compound or qualifier phrases by primary diagnosis; put qualifiers (e.g., "obstructing", "recurrent") in notes.
 - case_date format must be YYYY-MM-DD. If the surgeon says "today", "yesterday", or a partial date like "April 16", convert relative to today's date. If you cannot determine the date confidently, set it to null.
 - or_room: use the format "OR <number>" (e.g., "OR 12"). If the surgeon describes the room without a number ("the one next to the Aesculap room"), set or_room = null and add a clarification prompt.
@@ -412,7 +412,7 @@ def check_vocabulary_adherence(parsed, vocabs) -> int | None:
     if not isinstance(manifest, dict):
         return 0
     checks = [
-        ("procedure_name", vocabs["procedures"]),
+        ("procedure_primary", vocabs["procedures"]),
         ("approach", vocabs["approaches"]),
         ("indication", vocabs["indications"]),
     ]

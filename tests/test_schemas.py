@@ -18,8 +18,10 @@ def _valid_manifest_kwargs(**overrides):
         surgeon="sarin",
         case_year="2026",
         or_room="OR4",
-        procedure_name="Sigmoidectomy",
+        procedure_primary="Sigmoidectomy",
+        procedure_additional=[],
         approach="Robotic",
+        conversion_target="",
         indication="Diverticulitis",
         notes="",
     )
@@ -44,8 +46,17 @@ def _valid_state_kwargs(**overrides):
 
 
 def test_columns_have_expected_lengths():
-    assert len(CASE_MANIFEST_COLUMNS) == 8
+    assert len(CASE_MANIFEST_COLUMNS) == 10
     assert len(PIPELINE_STATE_COLUMNS) == 9
+
+
+def test_manifest_columns_include_spec_j_schema():
+    """The Spec J schema extension: procedure_primary replaces procedure_name,
+    procedure_additional + conversion_target are new columns."""
+    assert "procedure_primary" in CASE_MANIFEST_COLUMNS
+    assert "procedure_additional" in CASE_MANIFEST_COLUMNS
+    assert "conversion_target" in CASE_MANIFEST_COLUMNS
+    assert "procedure_name" not in CASE_MANIFEST_COLUMNS
 
 
 def test_stage_values():
@@ -90,11 +101,13 @@ def test_case_manifest_row_construct_and_defaults():
         surgeon="miller",
         case_year="2025",
         or_room="OR1",
-        procedure_name="LAR",
+        procedure_primary="LAR",
         approach="Laparoscopic",
         indication="Cancer",
     )
     assert r2.notes == ""
+    assert r2.procedure_additional == []
+    assert r2.conversion_target == ""
 
 
 def test_case_manifest_row_invalid_ucd_fil_id():
@@ -123,7 +136,7 @@ def test_case_manifest_row_surgeon_rules():
 
 
 def test_case_manifest_row_other_non_empty_fields():
-    for field in ("or_room", "procedure_name", "approach", "indication"):
+    for field in ("or_room", "procedure_primary", "approach", "indication"):
         with pytest.raises(ValidationError):
             CaseManifestRow(**_valid_manifest_kwargs(**{field: ""}))
 
@@ -132,7 +145,13 @@ def test_case_manifest_row_round_trip_with_empty_notes():
     r = CaseManifestRow(**_valid_manifest_kwargs(notes=""))
     d = r.to_csv_dict()
     assert d["notes"] == ""
-    assert d == {col: getattr(r, col) for col in CASE_MANIFEST_COLUMNS}
+    # procedure_additional round-trips list[] ↔ "" — the disk encoding
+    # differs from the in-memory attribute, so compare directly.
+    assert d["procedure_additional"] == ""
+    for col in CASE_MANIFEST_COLUMNS:
+        if col == "procedure_additional":
+            continue
+        assert d[col] == getattr(r, col)
     assert CaseManifestRow.from_csv_dict(d) == r
 
 
@@ -140,6 +159,118 @@ def test_case_manifest_row_round_trip_with_notes_text():
     r = CaseManifestRow(**_valid_manifest_kwargs(notes="redo case"))
     d = r.to_csv_dict()
     assert d["notes"] == "redo case"
+    assert CaseManifestRow.from_csv_dict(d) == r
+
+
+def test_procedure_additional_empty_list_serializes_as_empty_string():
+    """Empty list collapses to "" on disk (readability for the unaffected
+    majority of rows)."""
+    r = CaseManifestRow(**_valid_manifest_kwargs(procedure_additional=[]))
+    d = r.to_csv_dict()
+    assert d["procedure_additional"] == ""
+
+
+def test_procedure_additional_non_empty_serializes_as_json_array():
+    r = CaseManifestRow(
+        **_valid_manifest_kwargs(procedure_additional=["TAMIS"])
+    )
+    d = r.to_csv_dict()
+    assert d["procedure_additional"] == '["TAMIS"]'
+
+
+def test_procedure_additional_round_trip_empty():
+    r = CaseManifestRow(**_valid_manifest_kwargs(procedure_additional=[]))
+    d = r.to_csv_dict()
+    back = CaseManifestRow.from_csv_dict(d)
+    assert back == r
+    assert back.procedure_additional == []
+
+
+def test_procedure_additional_round_trip_with_values():
+    r = CaseManifestRow(
+        **_valid_manifest_kwargs(
+            procedure_additional=["TAMIS", "Diverting loop ileostomy"]
+        )
+    )
+    d = r.to_csv_dict()
+    back = CaseManifestRow.from_csv_dict(d)
+    assert back == r
+    assert back.procedure_additional == [
+        "TAMIS", "Diverting loop ileostomy",
+    ]
+
+
+def test_procedure_additional_from_csv_empty_string_yields_empty_list():
+    d = {col: "" for col in CASE_MANIFEST_COLUMNS}
+    d.update(
+        {
+            "ucd_fil_id": "UCD-FIL-001",
+            "surgeon": "sarin",
+            "case_year": "2026",
+            "or_room": "OR 4",
+            "procedure_primary": "Sigmoidectomy",
+            "approach": "Robotic",
+            "indication": "Diverticulitis",
+        }
+    )
+    row = CaseManifestRow.from_csv_dict(d)
+    assert row.procedure_additional == []
+
+
+def test_procedure_additional_invalid_json_raises_at_csv_read():
+    d = {col: "" for col in CASE_MANIFEST_COLUMNS}
+    d.update(
+        {
+            "ucd_fil_id": "UCD-FIL-001",
+            "surgeon": "sarin",
+            "case_year": "2026",
+            "or_room": "OR 4",
+            "procedure_primary": "Sigmoidectomy",
+            "procedure_additional": "not_json{{{",
+            "approach": "Robotic",
+            "indication": "Diverticulitis",
+        }
+    )
+    with pytest.raises(ValueError, match="procedure_additional"):
+        CaseManifestRow.from_csv_dict(d)
+
+
+def test_procedure_additional_non_array_root_raises_at_csv_read():
+    d = {col: "" for col in CASE_MANIFEST_COLUMNS}
+    d.update(
+        {
+            "ucd_fil_id": "UCD-FIL-001",
+            "surgeon": "sarin",
+            "case_year": "2026",
+            "or_room": "OR 4",
+            "procedure_primary": "Sigmoidectomy",
+            "procedure_additional": '{"not": "a list"}',
+            "approach": "Robotic",
+            "indication": "Diverticulitis",
+        }
+    )
+    with pytest.raises(ValueError, match="JSON array"):
+        CaseManifestRow.from_csv_dict(d)
+
+
+def test_procedure_additional_rejects_empty_string_element():
+    with pytest.raises(ValidationError):
+        CaseManifestRow(
+            **_valid_manifest_kwargs(procedure_additional=["Valid", ""])
+        )
+
+
+def test_conversion_target_default_empty():
+    r = CaseManifestRow(**_valid_manifest_kwargs())
+    assert r.conversion_target == ""
+
+
+def test_conversion_target_round_trip():
+    r = CaseManifestRow(
+        **_valid_manifest_kwargs(approach="Robotic", conversion_target="Open")
+    )
+    d = r.to_csv_dict()
+    assert d["conversion_target"] == "Open"
     assert CaseManifestRow.from_csv_dict(d) == r
 
 

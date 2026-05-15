@@ -98,7 +98,7 @@ def _render_tabular(
     by_stage: dict[str, int] = {}
     for state, manifest in joined:
         surgeon = manifest.surgeon if manifest else ""
-        procedure = (manifest.procedure_name if manifest else "")[:_PROCEDURE_MAX]
+        procedure = (manifest.procedure_primary if manifest else "")[:_PROCEDURE_MAX]
         cells = [
             state.ucd_fil_id.ljust(13),
             surgeon.ljust(10),

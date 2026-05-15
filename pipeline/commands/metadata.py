@@ -21,6 +21,7 @@ verify's existing discriminators in the audit log; audit.py's schema is
 unchanged.
 """
 
+import json
 import re
 import sys
 import traceback
@@ -50,9 +51,13 @@ _FAILED_NOTES_TRUNC = 80
 # Field name → picklist vocab name. case_year handles its own validation
 # branch (regex + vocab) but its vocab still comes from the same loader via
 # _PICKLIST_SPECIALTIES below, so it's NOT listed here.
+# conversion_target shares the approach vocabulary (same picklist, different
+# column on the manifest); procedure_additional reuses the procedure vocab
+# in a per-element check rather than a single-string lookup.
 _PICKLIST_FIELDS: dict[str, str] = {
-    "procedure_name": "procedure",
+    "procedure_primary": "procedure",
     "approach": "approach",
+    "conversion_target": "approach",
     "indication": "indication",
 }
 
@@ -117,27 +122,59 @@ def _audit_args(args: Namespace) -> dict:
     return {"edit_field": field, "edit_value": value, "confirm": True}
 
 
-def _validate_field(field: str, value: str) -> str | None:
-    """Return None on valid input, or a human-readable failure reason.
+def _validate_field(
+    field: str,
+    value: str,
+    current_row: CaseManifestRow | None = None,
+) -> tuple[str | None, object]:
+    """Return ``(error_or_none, coerced_value)``. The coerced value is what
+    callers must pass to ``tx.update`` — for most fields it's the raw string,
+    but ``procedure_additional`` coerces to ``list[str]``.
+
+    ``current_row`` carries the pre-edit row for cross-field rules
+    (``conversion_target`` must not equal the existing ``approach``).
     May raise _InfraError on vocab-load problems (caller maps that to exit 2).
     """
     if field == "case_year":
         if not _YEAR_RE.match(value):
-            return f"expected 4-digit year, got {value!r}"
+            return f"expected 4-digit year, got {value!r}", value
         vocab = _load_vocab("case_year")
         if value not in vocab:
             # Order-agnostic range display: vocab may be sorted DESC for UX.
             return (
                 f"year {value!r} not in case_years allowlist "
-                f"({len(vocab)} allowed: {min(vocab)}-{max(vocab)})"
+                f"({len(vocab)} allowed: {min(vocab)}-{max(vocab)})",
+                value,
             )
-        return None
+        return None, value
     if field == "or_room":
         if value.strip() == "":
-            return "or_room must be non-empty"
-        return None
+            return "or_room must be non-empty", value
+        return None, value
     if field == "notes":
-        return None
+        return None, value
+    if field == "conversion_target":
+        # Empty = clear the conversion. Skip vocab + cross-field checks.
+        if value == "":
+            return None, value
+        vocab = _load_vocab("approach")
+        if value not in vocab:
+            label = _PICKLIST_LABELS["approach"]
+            return (
+                f"{value!r} not in {label} vocabulary "
+                f"({len(vocab)} allowed values)",
+                value,
+            )
+        if current_row is not None and value == current_row.approach:
+            return (
+                f"conversion_target {value!r} equals the case's "
+                f"primary approach; pick a different target or clear "
+                f"conversion_target",
+                value,
+            )
+        return None, value
+    if field == "procedure_additional":
+        return _validate_additionals(value, current_row)
     if field in _PICKLIST_FIELDS:
         vocab_name = _PICKLIST_FIELDS[field]
         vocab = _load_vocab(vocab_name)
@@ -145,22 +182,95 @@ def _validate_field(field: str, value: str) -> str | None:
             label = _PICKLIST_LABELS[vocab_name]
             return (
                 f"{value!r} not in {label} vocabulary "
-                f"({len(vocab)} allowed values)"
+                f"({len(vocab)} allowed values)",
+                value,
             )
-        return None
-    return f"unknown field {field!r}"
+        return None, value
+    return f"unknown field {field!r}", value
 
 
-def _render_edit_block(header: str, case_id: str, field: str, before: str, after: str) -> str:
-    before_disp = before if before != "" else "(empty)"
-    after_disp = after if after != "" else "(empty)"
+def _validate_additionals(
+    value: str, current_row: CaseManifestRow | None
+) -> tuple[str | None, object]:
+    """Parse + validate the procedure_additional JSON-array string.
+
+    Rules:
+      - "" coerces to [] (a case with no additionals).
+      - Otherwise: must be a JSON array of strings (each non-empty).
+      - Each element must be in the procedure picklist.
+      - No element may duplicate procedure_primary on the row.
+      - No internal duplicates.
+    """
+    if value == "":
+        return None, []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as e:
+        return f"procedure_additional is not valid JSON: {e.msg}", value
+    if not isinstance(parsed, list):
+        return (
+            f"procedure_additional must be a JSON array, "
+            f"got {type(parsed).__name__}",
+            value,
+        )
+    for item in parsed:
+        if not isinstance(item, str) or not item:
+            return (
+                "procedure_additional elements must be non-empty strings",
+                value,
+            )
+    vocab = _load_vocab("procedure")
+    label = _PICKLIST_LABELS["procedure"]
+    for item in parsed:
+        if item not in vocab:
+            return (
+                f"{item!r} not in {label} vocabulary "
+                f"({len(vocab)} allowed values)",
+                value,
+            )
+    if current_row is not None and current_row.procedure_primary in parsed:
+        return (
+            f"procedure_additional contains the primary procedure "
+            f"{current_row.procedure_primary!r}; each procedure may "
+            f"appear only once per case",
+            value,
+        )
+    seen: set[str] = set()
+    for item in parsed:
+        if item in seen:
+            return (
+                f"procedure_additional contains duplicate value {item!r}",
+                value,
+            )
+        seen.add(item)
+    return None, parsed
+
+
+def _format_field_value(value: object) -> str:
+    """Stringify a manifest field for display in dry-run / commit / show
+    blocks. Lists (procedure_additional) round-trip via JSON; "" → "(empty)";
+    empty lists render as "(empty)"."""
+    if isinstance(value, list):
+        return json.dumps(value) if value else "(empty)"
+    if value == "":
+        return "(empty)"
+    return str(value)
+
+
+def _render_edit_block(
+    header: str,
+    case_id: str,
+    field: str,
+    before: object,
+    after: object,
+) -> str:
     return "\n".join(
         [
             header,
             f"{'Case:':<{_LABEL_WIDTH}}{case_id}",
             f"{'Field:':<{_LABEL_WIDTH}}{field}",
-            f"{'Before:':<{_LABEL_WIDTH}}{before_disp}",
-            f"{'After:':<{_LABEL_WIDTH}}{after_disp}",
+            f"{'Before:':<{_LABEL_WIDTH}}{_format_field_value(before)}",
+            f"{'After:':<{_LABEL_WIDTH}}{_format_field_value(after)}",
         ]
     )
 
@@ -192,7 +302,7 @@ def _dry_run(args: Namespace, paths: NasPaths | None) -> int:
     before = getattr(manifest_row, field)
 
     try:
-        reason = _validate_field(field, value)
+        reason, coerced = _validate_field(field, value, current_row=manifest_row)
     except _InfraError as e:
         print(f"infrastructure error: {e}", file=sys.stderr)
         return 2
@@ -207,7 +317,7 @@ def _dry_run(args: Namespace, paths: NasPaths | None) -> int:
             case_id,
             field,
             before,
-            value,
+            coerced,
         )
     )
     return 0
@@ -260,9 +370,13 @@ def _commit(args: Namespace, paths: NasPaths | None) -> int:
         print(f"error: case not found in manifest: {case_id}", file=sys.stderr)
         return 1
 
-    # Steps 3 + 4 — vocab load and value validation.
+    # Steps 3 + 4 — vocab load and value validation. The pre-snapshot row
+    # is what feeds cross-field rules (e.g., conversion_target vs approach);
+    # any concurrent mutation between here and the locked snapshot in step 5
+    # is a race the single-user metadata CLI accepts.
+    pre_row = manifest_by_id[case_id]
     try:
-        reason = _validate_field(field, new_value)
+        reason, coerced = _validate_field(field, new_value, current_row=pre_row)
     except _InfraError as e:
         log_audit(
             paths.audit_log,
@@ -296,7 +410,7 @@ def _commit(args: Namespace, paths: NasPaths | None) -> int:
     # `before`. CsvTable.transaction() commits via atomic tempfile rename
     # only if no exception fires inside the `with` block (verified by
     # reading csv_io.py:_commit and the context manager).
-    before_value: str | None = None
+    before_value: object | None = None
     try:
         with manifest_table.transaction() as tx:
             locked_row = tx.find(case_id)
@@ -305,7 +419,7 @@ def _commit(args: Namespace, paths: NasPaths | None) -> int:
                 # Treated as exception so the transaction does not commit.
                 raise RowNotFoundError(case_id)
             before_value = getattr(locked_row, field)
-            tx.update(case_id, **{field: new_value})
+            tx.update(case_id, **{field: coerced})
     except Exception as e:
         log_audit(
             paths.audit_log,
@@ -334,14 +448,14 @@ def _commit(args: Namespace, paths: NasPaths | None) -> int:
         details={
             "field": field,
             "before": before_value,
-            "after": new_value,
+            "after": coerced,
         },
     )
 
     # Step 7 — render committed block to stdout.
     print(
         _render_edit_block(
-            "Committed.", case_id, field, before_value, new_value
+            "Committed.", case_id, field, before_value, coerced
         )
     )
 
@@ -388,13 +502,21 @@ def _show(args: Namespace, paths: NasPaths | None) -> int:
 
 
 def _render_show(manifest_row: CaseManifestRow, state_row: PipelineStateRow | None) -> str:
+    additional_disp = (
+        ", ".join(manifest_row.procedure_additional)
+        if manifest_row.procedure_additional
+        else "(none)"
+    )
+    conv_disp = manifest_row.conversion_target or "(none)"
     rows: list[tuple[str, str]] = [
         ("Case:", manifest_row.ucd_fil_id),
         ("Surgeon:", manifest_row.surgeon),
         ("Case year:", manifest_row.case_year),
         ("OR room:", manifest_row.or_room),
-        ("Procedure:", manifest_row.procedure_name),
+        ("Procedure:", manifest_row.procedure_primary),
+        ("Additional:", additional_disp),
         ("Approach:", manifest_row.approach),
+        ("Conversion:", conv_disp),
         ("Indication:", manifest_row.indication),
         ("Notes:", manifest_row.notes if manifest_row.notes else "(empty)"),
     ]

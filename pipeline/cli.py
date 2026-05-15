@@ -8,8 +8,10 @@ STAGES = ["intake", "concatenated", "deidentified", "verified", "failed"]
 _EDITABLE_FIELDS = (
     "case_year",
     "or_room",
-    "procedure_name",
+    "procedure_primary",
+    "procedure_additional",
     "approach",
+    "conversion_target",
     "indication",
     "notes",
 )

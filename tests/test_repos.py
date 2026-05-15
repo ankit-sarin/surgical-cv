@@ -15,7 +15,10 @@ from app.repos.cases import (
 
 
 _HEADER = (
-    "ucd_fil_id,surgeon,case_year,or_room,procedure_name,approach,indication,notes"
+    "ucd_fil_id,surgeon,case_year,or_room,"
+    "procedure_primary,procedure_additional,"
+    "approach,conversion_target,"
+    "indication,notes"
 )
 
 
@@ -47,9 +50,9 @@ def test_csv_list_owned_by_returns_matching_case_ids(tmp_path):
     manifest = _write_manifest(
         tmp_path / "m.csv",
         [
-            "UCD-FIL-001,sarin,2026,OR 4,Low anterior resection,Robotic,Colorectal cancer,",
-            "UCD-FIL-002,sarin,2026,OR 4,Right hemicolectomy,Robotic,Colorectal cancer,",
-            "UCD-FIL-099,miller,2026,OR 1,Sigmoidectomy,Open,Colorectal cancer,",
+            "UCD-FIL-001,sarin,2026,OR 4,Low anterior resection,,Robotic,,Colorectal cancer,",
+            "UCD-FIL-002,sarin,2026,OR 4,Right hemicolectomy,,Robotic,,Colorectal cancer,",
+            "UCD-FIL-099,miller,2026,OR 1,Sigmoidectomy,,Open,,Colorectal cancer,",
         ],
     )
     repo = CsvCaseRepository(manifest)
@@ -60,7 +63,7 @@ def test_csv_list_owned_by_returns_matching_case_ids(tmp_path):
 def test_csv_list_owned_by_unknown_surgeon_returns_empty(tmp_path):
     manifest = _write_manifest(
         tmp_path / "m.csv",
-        ["UCD-FIL-001,sarin,2026,OR 4,Low anterior resection,Robotic,Colorectal cancer,"],
+        ["UCD-FIL-001,sarin,2026,OR 4,Low anterior resection,,Robotic,,Colorectal cancer,"],
     )
     repo = CsvCaseRepository(manifest)
     assert repo.list_owned_by("ghost") == []
@@ -69,14 +72,16 @@ def test_csv_list_owned_by_unknown_surgeon_returns_empty(tmp_path):
 def test_csv_get_case_returns_dict_with_all_columns(tmp_path):
     manifest = _write_manifest(
         tmp_path / "m.csv",
-        ["UCD-FIL-001,sarin,2026,OR 4,Low anterior resection,Robotic,Colorectal cancer,note-x"],
+        ["UCD-FIL-001,sarin,2026,OR 4,Low anterior resection,,Robotic,,Colorectal cancer,note-x"],
     )
     repo = CsvCaseRepository(manifest)
     case = repo.get_case("UCD-FIL-001")
     assert case is not None
     assert case["ucd_fil_id"] == "UCD-FIL-001"
     assert case["surgeon"] == "sarin"
-    assert case["procedure_name"] == "Low anterior resection"
+    assert case["procedure_primary"] == "Low anterior resection"
+    assert case["procedure_additional"] == []
+    assert case["conversion_target"] == ""
     assert case["notes"] == "note-x"
 
 
@@ -98,8 +103,8 @@ def test_csv_case_belongs_to(tmp_path, case_id, folder, expected):
     manifest = _write_manifest(
         tmp_path / "m.csv",
         [
-            "UCD-FIL-001,sarin,2026,OR 4,Low anterior resection,Robotic,Colorectal cancer,",
-            "UCD-FIL-099,miller,2026,OR 1,Sigmoidectomy,Open,Colorectal cancer,",
+            "UCD-FIL-001,sarin,2026,OR 4,Low anterior resection,,Robotic,,Colorectal cancer,",
+            "UCD-FIL-099,miller,2026,OR 1,Sigmoidectomy,,Open,,Colorectal cancer,",
         ],
     )
     repo = CsvCaseRepository(manifest)
@@ -116,6 +121,77 @@ def test_csv_missing_file_yields_empty_results(tmp_path):
     assert repo.case_belongs_to("UCD-FIL-001", "sarin") is False
 
 
+# ----- CsvCaseRepository — procedure_additional JSON parsing -----
+
+
+def test_csv_get_case_parses_procedure_additional_json(tmp_path):
+    """Non-empty JSON array on disk surfaces as a Python list to callers."""
+    manifest = _write_manifest(
+        tmp_path / "m.csv",
+        [
+            'UCD-FIL-001,sarin,2026,OR 4,Low anterior resection,"[""TAMIS""]",Robotic,,Colorectal cancer,',
+        ],
+    )
+    repo = CsvCaseRepository(manifest)
+    case = repo.get_case("UCD-FIL-001")
+    assert case is not None
+    assert case["procedure_additional"] == ["TAMIS"]
+
+
+def test_csv_get_case_parses_multi_element_additional(tmp_path):
+    manifest = _write_manifest(
+        tmp_path / "m.csv",
+        [
+            'UCD-FIL-001,sarin,2026,OR 4,Right hemicolectomy,'
+            '"[""TAMIS"", ""Diverting loop ileostomy""]"'
+            ',Robotic,,Colorectal cancer,',
+        ],
+    )
+    repo = CsvCaseRepository(manifest)
+    case = repo.get_case("UCD-FIL-001")
+    assert case["procedure_additional"] == [
+        "TAMIS", "Diverting loop ileostomy"
+    ]
+
+
+def test_csv_get_case_empty_additional_is_empty_list(tmp_path):
+    manifest = _write_manifest(
+        tmp_path / "m.csv",
+        [
+            "UCD-FIL-001,sarin,2026,OR 4,Low anterior resection,,Robotic,,Colorectal cancer,",
+        ],
+    )
+    repo = CsvCaseRepository(manifest)
+    case = repo.get_case("UCD-FIL-001")
+    assert case["procedure_additional"] == []
+
+
+def test_csv_get_case_malformed_additional_falls_back_to_empty(tmp_path):
+    """The read path is tolerant — the metadata CLI is the write-side
+    validator. Garbage in the cell surfaces as [] rather than raising."""
+    manifest = _write_manifest(
+        tmp_path / "m.csv",
+        [
+            "UCD-FIL-001,sarin,2026,OR 4,Low anterior resection,not_json,Robotic,,Colorectal cancer,",
+        ],
+    )
+    repo = CsvCaseRepository(manifest)
+    case = repo.get_case("UCD-FIL-001")
+    assert case["procedure_additional"] == []
+
+
+def test_csv_get_case_surfaces_conversion_target(tmp_path):
+    manifest = _write_manifest(
+        tmp_path / "m.csv",
+        [
+            "UCD-FIL-001,sarin,2026,OR 4,Sigmoidectomy,,Robotic,Open,Colorectal cancer,",
+        ],
+    )
+    repo = CsvCaseRepository(manifest)
+    case = repo.get_case("UCD-FIL-001")
+    assert case["conversion_target"] == "Open"
+
+
 # ----- CsvCaseRepository — stateless re-read -----
 
 
@@ -123,7 +199,7 @@ def test_csv_reads_fresh_each_call(tmp_path):
     """Mutate the file between calls; the second call must see the new state."""
     manifest = _write_manifest(
         tmp_path / "m.csv",
-        ["UCD-FIL-001,sarin,2026,OR 4,Low anterior resection,Robotic,Colorectal cancer,"],
+        ["UCD-FIL-001,sarin,2026,OR 4,Low anterior resection,,Robotic,,Colorectal cancer,"],
     )
     repo = CsvCaseRepository(manifest)
     assert repo.list_owned_by("sarin") == ["UCD-FIL-001"]
@@ -131,8 +207,8 @@ def test_csv_reads_fresh_each_call(tmp_path):
     _write_manifest(
         manifest,
         [
-            "UCD-FIL-001,sarin,2026,OR 4,Low anterior resection,Robotic,Colorectal cancer,",
-            "UCD-FIL-002,sarin,2026,OR 4,Right hemicolectomy,Robotic,Colorectal cancer,",
+            "UCD-FIL-001,sarin,2026,OR 4,Low anterior resection,,Robotic,,Colorectal cancer,",
+            "UCD-FIL-002,sarin,2026,OR 4,Right hemicolectomy,,Robotic,,Colorectal cancer,",
         ],
     )
     assert sorted(repo.list_owned_by("sarin")) == ["UCD-FIL-001", "UCD-FIL-002"]
@@ -144,7 +220,7 @@ def test_csv_reads_fresh_each_call(tmp_path):
 def test_csv_env_var_path(monkeypatch, tmp_path):
     manifest = _write_manifest(
         tmp_path / "m.csv",
-        ["UCD-FIL-001,sarin,2026,OR 4,Low anterior resection,Robotic,Colorectal cancer,"],
+        ["UCD-FIL-001,sarin,2026,OR 4,Low anterior resection,,Robotic,,Colorectal cancer,"],
     )
     monkeypatch.setenv("CASE_MANIFEST_PATH", str(manifest))
     repo = CsvCaseRepository()  # no explicit path → reads env

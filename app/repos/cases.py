@@ -25,11 +25,28 @@ tmpdir CSV (integration).
 from __future__ import annotations
 
 import csv
+import json
 import os
 from pathlib import Path
 from typing import Iterable, Protocol
 
 _DEFAULT_MANIFEST_PATH = Path("/mnt/nas/or-raw/case_manifest.csv")
+
+
+def _parse_additionals(raw: str | None) -> list[str]:
+    """Coerce the on-disk procedure_additional cell into a list. Empty /
+    missing collapses to [] silently; malformed JSON is logged as [] rather
+    than raising so the read path stays tolerant (the metadata CLI is the
+    write-side validator)."""
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [item for item in parsed if isinstance(item, str) and item]
 
 
 def manifest_path() -> Path:
@@ -66,7 +83,16 @@ class CsvCaseRepository:
         if not path.exists():
             return []
         with open(path, newline="") as f:
-            return list(csv.DictReader(f))
+            rows = list(csv.DictReader(f))
+        # Surface procedure_additional as list[str] rather than leaking the
+        # on-disk JSON-string encoding to callers (Spec K's submit handler,
+        # surgeon_app rendering, etc.).
+        for r in rows:
+            if "procedure_additional" in r:
+                r["procedure_additional"] = _parse_additionals(
+                    r.get("procedure_additional")
+                )
+        return rows
 
     def list_owned_by(self, folder_slug: str) -> list[str]:
         return [

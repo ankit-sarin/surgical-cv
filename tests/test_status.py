@@ -28,13 +28,13 @@ def _make_paths(tmp_path: Path) -> NasPaths:
     )
 
 
-def _manifest(ucd_fil_id="UCD-FIL-001", surgeon="sarin", procedure_name="Sigmoidectomy", **kw):
+def _manifest(ucd_fil_id="UCD-FIL-001", surgeon="sarin", procedure_primary="Sigmoidectomy", **kw):
     base = dict(
         ucd_fil_id=ucd_fil_id,
         surgeon=surgeon,
         case_year="2026",
         or_room="OR4",
-        procedure_name=procedure_name,
+        procedure_primary=procedure_primary,
         approach="Robotic",
         indication="Diverticulitis",
         notes="",
@@ -264,7 +264,7 @@ def test_status_creates_no_new_files(tmp_path):
 def test_long_procedure_name_truncated(tmp_path, capsys):
     paths = _make_paths(tmp_path)
     long = "x" * 50
-    _seed_manifest(paths, _manifest("UCD-FIL-001", procedure_name=long))
+    _seed_manifest(paths, _manifest("UCD-FIL-001", procedure_primary=long))
     _seed_state(paths, _state("UCD-FIL-001"))
     rc = status_mod.handle(_args(), paths=paths)
     assert rc == 0

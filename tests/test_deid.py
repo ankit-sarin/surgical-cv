@@ -41,7 +41,7 @@ def _manifest_row(ucd_fil_id="UCD-FIL-001", surgeon="sarin", **kw):
         surgeon=surgeon,
         case_year="2026",
         or_room="OR4",
-        procedure_name="Sigmoidectomy",
+        procedure_primary="Sigmoidectomy",
         approach="Robotic",
         indication="Diverticulitis",
         notes="",
