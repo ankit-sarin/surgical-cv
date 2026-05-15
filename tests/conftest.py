@@ -38,8 +38,16 @@ _TEST_PICKLISTS = (
     ("approach", "Laparoscopic", "Laparoscopic", 20, 1, None),
     ("approach", "Robotic", "Robotic", 30, 1, None),
     ("approach", "Hybrid", "Hybrid", 40, 1, None),
+    # Colorectal indications — "Other" pinned last so Section 3 tests can
+    # assert sort behavior.
     ("indication", "Colorectal cancer", "Colorectal cancer", 10, 1, "colorectal"),
+    ("indication", "Diverticulitis", "Diverticulitis", 20, 1, "colorectal"),
+    ("indication", "Other", "Other", 110, 1, "colorectal"),
+    # case_year is universal and DESC-sorted in production. Seed three
+    # ascending sort_orders mapping to descending years.
     ("case_year", "2026", "2026", 10, 1, None),
+    ("case_year", "2025", "2025", 20, 1, None),
+    ("case_year", "2024", "2024", 30, 1, None),
 )
 
 

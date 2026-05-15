@@ -116,16 +116,17 @@ def test_fetch_picklists_procedures_sorted(app_env):
 
 def test_fetch_picklists_unauthenticated_returns_empty(app_env):
     """Defense-in-depth: the gradio mount's auth_dep already gated /app/,
-    but fetch_picklists must degrade gracefully."""
+    but fetch_picklists must degrade gracefully across every field."""
     data = fetch_picklists(_make_request(token=None))
-    assert data == {"procedure": [], "approach": []}
+    assert set(data.keys()) == {"procedure", "approach", "case_year", "indication"}
+    assert all(v == [] for v in data.values())
 
 
 def test_fetch_picklists_admin_returns_empty(app_env):
-    """Section 2 is surgeon-only — admin requests get []."""
+    """Intake is surgeon-only — admin requests get the empty shape."""
     req = _make_request(token=encode_session("ankitsarin"))
     data = fetch_picklists(req)
-    assert data == {"procedure": [], "approach": []}
+    assert all(v == [] for v in data.values())
 
 
 # ----- scope specialty propagation -----

@@ -118,8 +118,11 @@ def fetch_segments(request: gr.Request) -> list[SegmentRecord]:
     return list(scope.list_raw_segments())
 
 
+_PICKLIST_FIELDS_FOR_INTAKE = ("procedure", "approach", "case_year", "indication")
+
+
 def fetch_picklists(request: gr.Request) -> dict[str, list[PicklistValue]]:
-    """Pull dropdown / radio choices for Section 2.
+    """Pull dropdown / radio choices for all Intake-form picklist fields.
 
     Per Spec G: picklist values aren't surgeon-authorization-scoped, only
     specialty-scoped. We hit ``scope.repos.picklist.list_active`` directly
@@ -127,14 +130,10 @@ def fetch_picklists(request: gr.Request) -> dict[str, list[PicklistValue]]:
     case authorization."""
     scope = _scope_from_request(request)
     if scope is None:
-        return {"procedure": [], "approach": []}
+        return {field: [] for field in _PICKLIST_FIELDS_FOR_INTAKE}
     return {
-        "procedure": scope.repos.picklist.list_active(
-            "procedure", scope.specialty
-        ),
-        "approach": scope.repos.picklist.list_active(
-            "approach", scope.specialty
-        ),
+        field: scope.repos.picklist.list_active(field, scope.specialty)
+        for field in _PICKLIST_FIELDS_FOR_INTAKE
     }
 
 
@@ -372,6 +371,67 @@ def _build_intake_section2(
                 )
 
 
+# ----- Intake Section 3: case context (case_year, or_room, indication) -----
+
+
+_OR_ROOM_PLACEHOLDER = "e.g., OR 4, ASC OR 2, Hybrid OR 3"
+_OR_ROOM_MAX_LENGTH = 50
+
+
+def _normalize_or_room(value: str | None) -> str | None:
+    """Trim whitespace; treat empty / whitespace-only as ``None``. Mirrors
+    the Section 5 submit-time validation rule (non-empty, 50-char cap)
+    in a forgiving way at edit time."""
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _build_intake_section3(
+    parent: gr.Blocks,
+    picklists_state,
+    case_year_state,
+    or_room_state,
+    indication_state,
+):
+    gr.Markdown("### Section 3 — Case context")
+
+    # or_room lives OUTSIDE the @gr.render so user keystrokes don't trigger
+    # a rebuild of the section (which would steal focus from the input).
+    or_tb = gr.Textbox(
+        label="OR room",
+        placeholder=_OR_ROOM_PLACEHOLDER,
+        max_lines=1,
+        max_length=_OR_ROOM_MAX_LENGTH,
+    )
+    or_tb.blur(
+        _normalize_or_room, inputs=or_tb, outputs=or_room_state
+    )
+
+    @gr.render(inputs=[picklists_state, case_year_state, indication_state])
+    def render_section3_dropdowns(picklists, case_year, indication):
+        cy_choices = _picklist_choices(picklists.get("case_year", []))
+        cy_dd = gr.Dropdown(
+            label="Case year",
+            choices=cy_choices,
+            value=case_year,
+            filterable=True,
+            allow_custom_value=False,
+        )
+        cy_dd.change(lambda v: v, inputs=cy_dd, outputs=case_year_state)
+
+        ind_choices = _picklist_choices(picklists.get("indication", []))
+        ind_dd = gr.Dropdown(
+            label="Indication",
+            choices=ind_choices,
+            value=indication,
+            filterable=True,
+            allow_custom_value=False,
+        )
+        ind_dd.change(lambda v: v, inputs=ind_dd, outputs=indication_state)
+
+
 # ----- top-level Blocks build -----
 
 
@@ -386,11 +446,16 @@ def build_surgeon_app() -> gr.Blocks:
                 # of them at submit time.
                 segments_state = gr.State([])
                 selected_state = gr.State([])
-                picklists_state = gr.State({"procedure": [], "approach": []})
+                picklists_state = gr.State(
+                    {field: [] for field in _PICKLIST_FIELDS_FOR_INTAKE}
+                )
                 procedure_primary_state = gr.State(None)
                 procedure_additional_state = gr.State([])
                 approach_state = gr.State(None)
                 conversion_target_state = gr.State(None)
+                case_year_state = gr.State(None)
+                or_room_state = gr.State(None)
+                indication_state = gr.State(None)
 
                 _build_intake_section1(
                     blocks, segments_state, selected_state
@@ -402,6 +467,13 @@ def build_surgeon_app() -> gr.Blocks:
                     procedure_additional_state,
                     approach_state,
                     conversion_target_state,
+                )
+                _build_intake_section3(
+                    blocks,
+                    picklists_state,
+                    case_year_state,
+                    or_room_state,
+                    indication_state,
                 )
 
                 blocks.load(fetch_picklists, None, picklists_state)
