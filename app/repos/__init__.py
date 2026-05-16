@@ -11,7 +11,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.repos.attention import (  # noqa: F401  — re-export
+    AttentionItem,
+    AttentionItemAlreadyClosedError,
+    AttentionItemActionMismatchError,
+    AttentionItemNotFoundError,
+    AttentionItemNotResolvableError,
     AttentionItemsRepository,
+    AttentionRepoError,
     InMemoryAttentionItemsRepository,
     SqliteAttentionItemsRepository,
 )

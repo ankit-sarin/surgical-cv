@@ -21,6 +21,11 @@ from app.auth import (
     identity_string_for_request,
     lookup_active_user,
 )
+from app.attention_actions import (
+    SURGEON_ACTION_BY_TYPE,
+    action_for_type,
+    display_for_type,
+)
 from app.badges import BadgeState, derive_badge_state
 from app.badges_html import (
     MY_CASES_CSS,
@@ -28,6 +33,12 @@ from app.badges_html import (
     format_counter_strip,
     format_footer,
     pipeline_timeline_html,
+)
+from app.repos import (
+    AttentionItem,
+    AttentionItemActionMismatchError,
+    AttentionItemAlreadyClosedError,
+    AttentionItemNotFoundError,
 )
 from app.intake.submit import (
     SubmitOutcome,
@@ -1182,6 +1193,261 @@ def _build_my_cases(blocks: gr.Blocks) -> dict:
     }
 
 
+# ----- Action Required tab -----
+
+
+# Pre-allocated card slot count. The Action Required tab uses a fixed
+# pool of (Group + HTML + Button + States) tuples — Gradio can't create
+# components dynamically on render, so we allocate a comfortable maximum
+# at build time and toggle visibility per-render. 10 covers an active
+# surgeon with several open items; overflow shows a "more items"
+# overflow notice.
+_MAX_VISIBLE_ACTION_CARDS = 10
+
+_AR_EMPTY_HTML = (
+    '<p class="ds-empty-state">No action items of concern.</p>'
+)
+
+
+def _start_of_day_utc_iso(now: datetime | None = None) -> str:
+    """ISO 8601 timestamp for UTC midnight of ``now``'s day. v1
+    approximation: surgeon-local timezone math is a follow-up. Used by
+    ``count_actions_today`` to define the "today" cutoff."""
+    n = now or datetime.now(timezone.utc)
+    midnight = n.replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight.isoformat(timespec="seconds")
+
+
+def _format_ar_timestamp(iso: str) -> str:
+    """Card timestamp display: ``YYYY-MM-DD HH:MM UTC``. Falls back to
+    the raw string if it's not parseable so a malformed row never takes
+    the tab offline."""
+    try:
+        dt = datetime.fromisoformat(iso)
+    except ValueError:
+        return iso
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _action_card_html(item: AttentionItem) -> str:
+    """One Action Required card. Returns the inner HTML (without the
+    action button — the button is a real ``gr.Button`` widget alongside
+    the HTML so click handlers can fire). Severity stripe + badge are
+    bound to ``item.severity`` via the brand class system."""
+    display = display_for_type(item.type)
+    sev = item.severity if item.severity in ("normal", "high") else "normal"
+    case_label = item.case_id if item.case_id else "—"
+    parts = [
+        f'<article class="ds-card ds-card-severity-{sev}" '
+        f'data-item-id="{item.id}" data-item-type="{escape(item.type)}">',
+        '<header class="ds-card-header">',
+        f'<span class="ds-badge ds-badge-{sev}" data-severity="{sev}">'
+        f'{sev.title()}</span>',
+        f'<span class="ds-card-type-label">{escape(display.label)}</span>',
+        f'<span class="ds-card-case-id">{escape(case_label)}</span>',
+        f'<span class="ds-card-timestamp">'
+        f'{escape(_format_ar_timestamp(item.created_at))}</span>',
+        '</header>',
+        '<div class="ds-card-body">',
+        f'<p class="ds-card-description">{escape(display.description)}</p>',
+    ]
+    if item.details:
+        parts.append(
+            f'<p class="ds-card-details">{escape(item.details)}</p>'
+        )
+    parts.append('</div>')
+    parts.append('</article>')
+    return "".join(parts)
+
+
+def _format_ar_counter(
+    n_items: int, n_resolved_today: int, n_pending: int
+) -> str:
+    """Header counter strip — same visual shape as the My Cases strip.
+    Format: ``"N items · M resolved today · K pending"``. Plurals
+    intentionally consistent ("items" not "item")."""
+    return (
+        f"{n_items} items · {n_resolved_today} resolved today · "
+        f"{n_pending} pending"
+    )
+
+
+def render_action_required(request: gr.Request) -> tuple:
+    """Build the Action Required tab outputs.
+
+    Returns a flat tuple matching the outputs wired in
+    ``_build_action_required``:
+
+        counter_md, empty_html_update, then per-slot:
+            group_visible, html_value, button_update,
+            item_id_state, action_state
+
+    Folder slug + username come exclusively from the session — never
+    from form/event data. Unauthenticated requests render the empty
+    state (defensive; production auth_dep gates /app/)."""
+    scope = _scope_from_request(request)
+    if scope is None:
+        return _ar_empty_outputs()
+
+    items = scope.repos.attention.list_for_user(scope.username, "open")
+    today_iso = _start_of_day_utc_iso()
+    n_resolved_today = scope.repos.attention.count_actions_today(
+        scope.username, today_iso
+    )
+
+    n_items = len(items)
+    n_pending = n_items
+    counter_text = _format_ar_counter(n_items, n_resolved_today, n_pending)
+
+    if n_items == 0:
+        outputs: list = [counter_text, gr.update(visible=True)]
+        for _ in range(_MAX_VISIBLE_ACTION_CARDS):
+            outputs.extend([
+                gr.update(visible=False),  # group
+                "",                          # html
+                gr.update(visible=False),    # button
+                0,                           # item_id_state
+                "",                          # action_state
+            ])
+        return tuple(outputs)
+
+    outputs = [counter_text, gr.update(visible=False)]
+    visible_items = items[:_MAX_VISIBLE_ACTION_CARDS]
+    for i in range(_MAX_VISIBLE_ACTION_CARDS):
+        if i < len(visible_items):
+            it = visible_items[i]
+            action = action_for_type(it.type)
+            outputs.append(gr.update(visible=True))
+            outputs.append(_action_card_html(it))
+            if action is None:
+                # Unknown type — read-only card, no action button.
+                outputs.append(gr.update(visible=False))
+                outputs.append(it.id)
+                outputs.append("")
+            else:
+                outputs.append(
+                    gr.update(value=action.title(), visible=True)
+                )
+                outputs.append(it.id)
+                outputs.append(action)
+        else:
+            outputs.extend([
+                gr.update(visible=False),
+                "",
+                gr.update(visible=False),
+                0,
+                "",
+            ])
+    return tuple(outputs)
+
+
+def _ar_empty_outputs() -> tuple:
+    """Outputs tuple for unauthenticated / no-scope renders. Empty-state
+    visible, all card slots hidden."""
+    outputs: list = ["", gr.update(visible=True)]
+    for _ in range(_MAX_VISIBLE_ACTION_CARDS):
+        outputs.extend([
+            gr.update(visible=False), "", gr.update(visible=False), 0, "",
+        ])
+    return tuple(outputs)
+
+
+def _ar_action_handler(item_id: int, action: str, request: gr.Request) -> tuple:
+    """Click handler for one card's action button. Validates via the
+    repo (which raises on type-mismatch / scope-violation / already-
+    closed), then re-renders the entire Action Required surface so the
+    actioned card vanishes and the counter strip updates without
+    waiting for the 30 s timer.
+
+    Race-graceful: ``AttentionItemAlreadyClosedError`` and
+    ``AttentionItemNotFoundError`` collapse to silent re-render — they
+    indicate a stale tab or a double-click, both fixable by simply
+    reloading the live state."""
+    scope = _scope_from_request(request)
+    if scope is None or not item_id:
+        return render_action_required(request)
+    try:
+        if action == "dismiss":
+            scope.repos.attention.dismiss(int(item_id), scope.username)
+        elif action == "resolve":
+            scope.repos.attention.resolve(int(item_id), scope.username)
+        # Unknown action verbs (shouldn't happen — verb comes from our
+        # own dispatch table) collapse to silent re-render.
+    except (
+        AttentionItemAlreadyClosedError, AttentionItemNotFoundError,
+        AttentionItemActionMismatchError,
+    ):
+        # Race or UI-bypass — re-render to surface the live state.
+        pass
+    return render_action_required(request)
+
+
+def _build_action_required(blocks: gr.Blocks) -> dict:
+    """Construct the Action Required tab body. Pre-allocates
+    ``_MAX_VISIBLE_ACTION_CARDS`` slots so click handlers can be wired
+    at build time; render fns toggle visibility + payload per-tick.
+
+    Returns a dict of components reachable from outside (tests,
+    timer wiring at the build_surgeon_app level)."""
+    counter_md = gr.Markdown("", elem_id="ar-counter")
+    empty_html = gr.HTML(_AR_EMPTY_HTML, visible=True, elem_id="ar-empty")
+
+    slots = []
+    for i in range(_MAX_VISIBLE_ACTION_CARDS):
+        with gr.Group(visible=False, elem_id=f"ar-card-slot-{i}") as group:
+            html = gr.HTML("")
+            with gr.Row():
+                # Spacer so the button right-aligns; an empty Markdown
+                # acts as a flex stretcher without rendering chrome.
+                gr.Markdown("")
+                action_btn = gr.Button(
+                    "Action", variant="primary", visible=False,
+                    elem_id=f"ar-card-btn-{i}",
+                )
+            item_id_state = gr.State(0)
+            action_state = gr.State("")
+        slots.append({
+            "group": group,
+            "html": html,
+            "btn": action_btn,
+            "item_id_state": item_id_state,
+            "action_state": action_state,
+        })
+
+    # Render-output ordering — also the click-handler output ordering,
+    # since post-action refresh re-runs the same render fn.
+    render_outputs: list = [counter_md, empty_html]
+    for s in slots:
+        render_outputs.extend([
+            s["group"], s["html"], s["btn"],
+            s["item_id_state"], s["action_state"],
+        ])
+
+    timer = gr.Timer(value=30, active=True)
+
+    blocks.load(render_action_required, None, render_outputs)
+    timer.tick(render_action_required, None, render_outputs)
+
+    # Per-slot click handler. Each button's inputs are its own
+    # item_id_state + action_state so the handler knows which item to
+    # act on without needing to inspect the Blocks tree.
+    for s in slots:
+        s["btn"].click(
+            _ar_action_handler,
+            inputs=[s["item_id_state"], s["action_state"]],
+            outputs=render_outputs,
+        )
+
+    return {
+        "counter_md": counter_md,
+        "empty_html": empty_html,
+        "slots": slots,
+        "timer": timer,
+    }
+
+
 # ----- top-level Blocks build -----
 
 
@@ -1349,6 +1615,6 @@ def build_surgeon_app() -> gr.Blocks:
             with gr.Tab("My Cases"):
                 _build_my_cases(blocks)
             with gr.Tab("Action Required"):
-                gr.Markdown("**Action Required** — coming soon.")
+                _build_action_required(blocks)
         blocks.load(_identity, None, identity_md)
     return blocks

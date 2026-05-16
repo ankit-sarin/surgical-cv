@@ -35,11 +35,14 @@ from app.badges import BadgeState
 MY_CASES_CSS = """
 :root {
   --ds-primary: #0A5E56;
+  --ds-primary-mid: #3D8B82;
+  --ds-primary-light: #DFF0ED;
   --ds-accent: #B85D3A;
   --ds-text: #2C2C2C;
   --ds-text-muted: #6B6B6B;
   --ds-border: #C5CDD6;
   --ds-bg: #EEF5F4;
+  --ds-surface: #DFEBE9;
   --ds-success: #2D7A52;
   --ds-warning: #C57E1E;
   --ds-error: var(--ds-accent);
@@ -65,6 +68,81 @@ MY_CASES_CSS = """
   background-color: transparent;
   color: var(--ds-warning);
   border-color: var(--ds-warning);
+}
+
+/* Severity variants for attention_items cards. Reuses the workflow
+   warning + error tokens so severity language stays consistent. */
+.ds-badge-normal {
+  background-color: var(--ds-warning);
+  color: #ffffff;
+}
+.ds-badge-high {
+  background-color: var(--ds-error);
+  color: #ffffff;
+}
+
+/* Item cards — reusable across Action Required + future queues.
+   Synced from ~/.claude/skills/digitalsurgeon-brand/assets/gradio-theme.css. */
+.ds-card {
+  background-color: #ffffff;
+  border: 1px solid var(--ds-border);
+  border-radius: 8px;
+  padding: 14px 16px 14px 20px;
+  margin: 12px 0;
+  box-shadow: 0 1px 2px rgba(44, 44, 44, 0.04);
+  border-left: 4px solid var(--ds-border);
+  font-family: 'IBM Plex Sans', sans-serif;
+  color: var(--ds-text);
+}
+.ds-card-severity-normal { border-left-color: var(--ds-warning); }
+.ds-card-severity-high { border-left-color: var(--ds-error); }
+.ds-card-header {
+  display: flex; align-items: center; gap: 10px;
+  flex-wrap: wrap; margin-bottom: 6px;
+}
+.ds-card-type-label {
+  font-family: 'Fraunces', Georgia, serif;
+  font-size: 16px; font-weight: 600;
+  color: var(--ds-primary);
+}
+.ds-card-case-id {
+  font-family: 'IBM Plex Mono', Consolas, monospace;
+  font-size: 12px; color: var(--ds-text-muted);
+  letter-spacing: 0.02em;
+}
+.ds-card-timestamp {
+  font-size: 12px; color: var(--ds-text-muted);
+  margin-left: auto;
+}
+.ds-card-body { font-size: 14px; line-height: 1.5; margin: 4px 0 10px 0; }
+.ds-card-description { color: var(--ds-text); margin-bottom: 4px; }
+.ds-card-details { color: var(--ds-text-muted); font-size: 13px; }
+.ds-card-footer { display: flex; justify-content: flex-end; margin-top: 8px; }
+.ds-card-action-button {
+  font-family: 'IBM Plex Sans', sans-serif;
+  font-size: 14px; font-weight: 500;
+  color: #ffffff;
+  background-color: var(--ds-primary);
+  border: 1px solid var(--ds-primary);
+  border-radius: 6px;
+  padding: 6px 16px;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.ds-card-action-button:hover {
+  background-color: var(--ds-primary-mid, #3D8B82);
+  border-color: var(--ds-primary-mid, #3D8B82);
+}
+.ds-card-action-button:disabled {
+  background-color: var(--ds-border);
+  border-color: var(--ds-border);
+  cursor: not-allowed;
+}
+.ds-empty-state {
+  font-family: 'IBM Plex Sans', sans-serif;
+  font-size: 15px; color: var(--ds-text-muted);
+  text-align: center;
+  padding: 48px 16px; margin: 16px 0;
 }
 
 /* Pipeline timeline — inline SVG.

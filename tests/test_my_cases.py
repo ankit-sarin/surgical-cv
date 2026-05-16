@@ -171,13 +171,17 @@ def test_surgeon_app_main_mounts_with_theme_and_css():
 
 
 def test_my_cases_blocks_carries_30s_timer():
+    """Brief #3 added the Action Required tab with its own 30 s timer,
+    so the surgeon Blocks now carries two Timer components total. The
+    My Cases timer is still 30 s — both tabs share the same polling
+    cadence so the surgeon's mental model is uniform across them."""
     from app.surgeon_app import build_surgeon_app
 
     blocks = build_surgeon_app()
     import gradio as gr
     timers = [c for c in blocks.blocks.values() if isinstance(c, gr.Timer)]
-    assert len(timers) == 1
-    assert timers[0].value == 30
+    assert len(timers) == 2
+    assert all(t.value == 30 for t in timers)
 
 
 def test_my_cases_blocks_has_detail_group_initially_hidden():

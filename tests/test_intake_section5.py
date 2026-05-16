@@ -72,12 +72,23 @@ def test_phi_confirm_group_hidden_initially():
 
 def test_intake_tab_state_count_unchanged_at_thirteen():
     """Section 5 doesn't add data states — the 13-state total from Spec H
-    must hold (show_more was hoisted up but is still counted among them)."""
+    for the Intake tab must hold (show_more was hoisted up but is still
+    counted among them).
+
+    Brief #3 added the Action Required tab which allocates 2 states per
+    card slot (item_id_state + action_state), so the global state count
+    is no longer the right signal — back out the AR tab's contribution
+    to keep this test focused on its actual concern (Intake drift)."""
+    from app.surgeon_app import _MAX_VISIBLE_ACTION_CARDS
+
     blocks = build_surgeon_app()
-    state_count = sum(
+    total_states = sum(
         1 for c in blocks.blocks.values() if isinstance(c, gr.State)
     )
-    assert state_count == 13
+    # AR tab: 2 states per pre-allocated slot.
+    ar_states = _MAX_VISIBLE_ACTION_CARDS * 2
+    intake_states = total_states - ar_states
+    assert intake_states == 13
 
 
 def test_success_banner_starts_empty():
