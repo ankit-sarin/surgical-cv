@@ -27,6 +27,7 @@ from pipeline.schemas import (
     Stage,
 )
 
+from app.worker.phi_scan import redact_case_notes
 from app.worker.scan import Marker
 
 # F-006: attention_items.details is surgeon-visible (the Action Required tab
@@ -202,6 +203,13 @@ def dispatch_marker(
             kind="orphan",
             detail=f"case {marker.ucd_fil_id} not present in case_manifest.csv",
         )
+
+    # Brief #3.5a: scan the manifest's notes for PHI and redact in
+    # place before any downstream stage runs. The structured scan
+    # result is intentionally discarded here; Brief #3.5b will
+    # consume it at this call site to emit a rollup
+    # ``phi_redacted`` attention item when the result is non-empty.
+    redact_case_notes(paths, marker.ucd_fil_id)
 
     ensure_intake_row(
         paths, marker.ucd_fil_id, marker.segments, marker.submitted_at
