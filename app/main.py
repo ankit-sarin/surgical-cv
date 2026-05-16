@@ -30,7 +30,6 @@ import gradio as gr
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
-from app.admin_app import build_admin_app
 from app.auth import (
     DSM_NEEDS_OTP,
     DSM_SUCCESS,
@@ -57,6 +56,7 @@ from app.repos import (
     SqliteAttentionItemsRepository,
     SqlitePicklistRepository,
 )
+from app.admin_app import ADMIN_CSS, build_admin_app
 from app.scopes import AdminScope, SurgeonScope, UserScope
 from app.surgeon_app import SURGEON_CSS, SURGEON_THEME, build_surgeon_app
 
@@ -396,4 +396,5 @@ gr.mount_gradio_app(
     build_admin_app(),
     path="/admin",
     auth_dependency=_gradio_auth_dep("admin"),
+    css=ADMIN_CSS,
 )
