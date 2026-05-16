@@ -72,13 +72,14 @@ def _seed_sqlite_item(db_path, item: AttentionItem) -> int:
         cur = conn.execute(
             "INSERT INTO attention_items "
             "(id, type, case_id, affected_user, severity, details, "
-            " created_at, created_by, status, resolved_at, resolved_by, "
-            " resolution_note) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " created_at, created_by, updated_at, status, "
+            " resolved_at, resolved_by, resolution_note) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 item.id, item.type, item.case_id, item.affected_user,
                 item.severity, item.details, item.created_at,
-                item.created_by, item.status, item.resolved_at,
+                item.created_by, item.updated_at or item.created_at,
+                item.status, item.resolved_at,
                 item.resolved_by, item.resolution_note,
             ),
         )

@@ -59,6 +59,13 @@ CREATE TABLE attention_items (
     details         TEXT,
     created_at      TEXT NOT NULL,
     created_by      TEXT NOT NULL REFERENCES users(username),
+    -- Brief #3.5b: ``updated_at`` advances on every upsert via
+    -- ``upsert_by_case_and_type``. For first-insert paths (the
+    -- existing ``write_attention_item`` flow used by hard/soft fail /
+    -- orphan / malformed emits) the row writer sets ``updated_at =
+    -- created_at`` at insert time. NOT NULL is intentional — no
+    -- ambiguous "we don't know when it was last touched" state.
+    updated_at      TEXT NOT NULL,
     status          TEXT NOT NULL DEFAULT 'open'
                     CHECK (status IN ('open', 'resolved', 'dismissed')),
     resolved_at     TEXT,
@@ -72,6 +79,25 @@ CREATE INDEX idx_attention_affected_status
 -- Admin's heterogeneous queue: WHERE status = 'open' ORDER BY created_at DESC.
 CREATE INDEX idx_attention_status_created
     ON attention_items (status, created_at);
+-- Brief #3.5b: enforce "exactly one phi_redacted row per case_id".
+--
+-- Scope narrowed from the brief's original spec
+-- (``WHERE case_id IS NOT NULL``) to phi_redacted only. Reason:
+-- broadening the uniqueness to all per-case rollup types
+-- (verify_soft_fail, pipeline_failure, orphan_marker) would break
+-- existing retry semantics where operators re-trigger a failed case
+-- by moving its marker back from ``.failed/`` — the second dispatch
+-- emits another rollup row of the same type, today a plain INSERT.
+-- Converting all those call sites to upsert is broader than this
+-- brief's stated cardinality intent. Per the brief's contract table:
+-- "Cardinality: Exactly one row per (case_id, type='phi_redacted')."
+-- The narrower index satisfies that exactly without forcing the
+-- companion refactors. If we later decide the other rollup types
+-- should also coalesce on retry, expand the WHERE clause or drop
+-- it entirely.
+CREATE UNIQUE INDEX idx_attention_phi_redacted_case_uniq
+    ON attention_items (case_id)
+    WHERE case_id IS NOT NULL AND type = 'phi_redacted';
 
 CREATE TABLE admin_audit (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -36,19 +36,21 @@ def _seed_attention(
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys = ON")
     try:
+        now = utcnow()
         cur = conn.execute(
             "INSERT INTO attention_items "
             "(type, case_id, affected_user, severity, details, "
-            " created_at, created_by, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            " created_at, created_by, updated_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 item_type,
                 case_id,
                 affected_user,
                 severity,
                 details,
-                utcnow(),
+                now,
                 affected_user,
+                now,
                 status,
             ),
         )

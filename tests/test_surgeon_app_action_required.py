@@ -71,11 +71,11 @@ def _seed_attention(
         cur = conn.execute(
             "INSERT INTO attention_items "
             "(type, case_id, affected_user, severity, details, "
-            " created_at, created_by, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'open')",
+            " created_at, created_by, updated_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')",
             (
                 item_type, case_id, affected_user, severity, details,
-                created_at, "asarin",
+                created_at, "asarin", created_at,
             ),
         )
         conn.commit()

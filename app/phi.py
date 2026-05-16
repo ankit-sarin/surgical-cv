@@ -62,3 +62,35 @@ def scan_for_phi(text: str | None) -> dict[str, int]:
         if n:
             counts[name] = n
     return counts
+
+
+def format_phi_details(categories) -> str:
+    """Brief #3.5b: render a PHI-categories set into the canonical
+    rollup-attention-item ``details`` string.
+
+    Accepts any iterable / mapping whose membership test (``c in
+    categories``) returns True for category names. Most natural inputs
+    are :func:`scan_for_phi`'s dict, a ``frozenset``/``set``, a list,
+    or a tuple — all four work.
+
+    Returns the empty string for an empty / falsy input. Callers
+    treat the empty string as the "do not emit" signal — the worker
+    skips the upsert when ``format_phi_details(scan_result) == ""``.
+
+    Output for non-empty input:
+
+        ``PHI was found and redacted. Categories: <c1>, <c2>, <c3>.``
+
+    Categories appear in :data:`_CATEGORIES` order (mrn, ssn, date,
+    name, phone, address), filtered to those present in ``categories``,
+    lowercased (no transform — phi.py's vocabulary is already lower).
+    The string is intentionally safe for direct rendering: it names
+    categories only, never values."""
+    if not categories:
+        return ""
+    present = [name for name, _ in _CATEGORIES if name in categories]
+    if not present:
+        # Defensive: the input had items but none matched the canonical
+        # vocabulary. Treat as empty so we never emit a malformed line.
+        return ""
+    return f"PHI was found and redacted. Categories: {', '.join(present)}."

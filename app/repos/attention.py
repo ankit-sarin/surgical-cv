@@ -104,6 +104,12 @@ class AttentionItem:
     resolved_at: str | None
     resolved_by: str | None
     resolution_note: str | None
+    # Brief #3.5b: advances on every ``upsert_by_case_and_type``;
+    # equals ``created_at`` for rows inserted via the plain
+    # ``write_attention_item`` path. Default keeps in-memory test
+    # construction unbreaking when callers don't care about the
+    # value — SQLite rows always populate it via ``from_row``.
+    updated_at: str = ""
 
     @classmethod
     def from_row(cls, row) -> "AttentionItem":
@@ -120,6 +126,7 @@ class AttentionItem:
             resolved_at=row["resolved_at"],
             resolved_by=row["resolved_by"],
             resolution_note=row["resolution_note"],
+            updated_at=row["updated_at"],
         )
 
 
@@ -160,6 +167,25 @@ class AttentionItemsRepository(Protocol):
         """Counter-strip support for the Action Required tab: how many
         attention.{resolve,dismiss} audit rows did ``username`` write
         since ``today_start_iso`` (UTC midnight in v1)."""
+        ...
+
+    def upsert_by_case_and_type(
+        self,
+        *,
+        case_id: str,
+        item_type: str,
+        affected_user: str,
+        severity: str,
+        details: str,
+    ) -> AttentionItem:
+        """Brief #3.5b: per-case rollup. If an open ``phi_redacted`` row
+        exists for ``case_id``, update its ``details``, ``severity``, and
+        ``updated_at`` in place; otherwise insert a fresh open row.
+        Single SQL transaction — never read-then-create at the app layer.
+        The schema-level partial unique index
+        (``idx_attention_phi_redacted_case_uniq``) is the conflict target;
+        ``item_type`` must be ``'phi_redacted'`` for now (other types use
+        the plain INSERT path in :func:`write_attention_item`)."""
         ...
 
 
@@ -288,6 +314,61 @@ class SqliteAttentionItemsRepository:
             except sqlite3.OperationalError:
                 return 0
             return int(row[0]) if row else 0
+        finally:
+            conn.close()
+
+    def upsert_by_case_and_type(
+        self,
+        *,
+        case_id: str,
+        item_type: str,
+        affected_user: str,
+        severity: str,
+        details: str,
+    ) -> AttentionItem:
+        # The partial unique index this upsert targets is phi_redacted-only.
+        # Other item types use the plain INSERT path in
+        # ``write_attention_item`` — they'd produce duplicate rows here
+        # because the ON CONFLICT clause wouldn't match their inserts.
+        if item_type != "phi_redacted":
+            raise ValueError(
+                f"upsert_by_case_and_type only supports type='phi_redacted'; "
+                f"got {item_type!r}"
+            )
+        now = utcnow()
+        # ``ON CONFLICT (case_id) WHERE ...`` must mirror the partial
+        # index's WHERE clause exactly so SQLite can identify the
+        # target index. ``excluded`` references the row that would
+        # have been inserted; we update only the surgeon-visible
+        # payload + the bookkeeping timestamp, never created_at /
+        # created_by / status / id (those stay frozen at first emit).
+        conn = connect(self._db_path_override)
+        try:
+            row = conn.execute(
+                "INSERT INTO attention_items "
+                "(type, case_id, affected_user, severity, details, "
+                " created_at, created_by, updated_at, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open') "
+                "ON CONFLICT (case_id) "
+                "  WHERE case_id IS NOT NULL AND type = 'phi_redacted' "
+                "DO UPDATE SET "
+                "  details = excluded.details, "
+                "  severity = excluded.severity, "
+                "  updated_at = excluded.updated_at "
+                "RETURNING *",
+                (
+                    item_type,
+                    case_id,
+                    affected_user,
+                    severity,
+                    details,
+                    now,
+                    "system_worker",
+                    now,
+                ),
+            ).fetchone()
+            conn.commit()
+            return AttentionItem.from_row(row)
         finally:
             conn.close()
 
@@ -458,6 +539,77 @@ class InMemoryAttentionItemsRepository:
             audit_action=_AUDIT_ACTION_DISMISS,
         )
 
+    def upsert_by_case_and_type(
+        self,
+        *,
+        case_id: str,
+        item_type: str,
+        affected_user: str,
+        severity: str,
+        details: str,
+    ) -> AttentionItem:
+        if item_type != "phi_redacted":
+            raise ValueError(
+                f"upsert_by_case_and_type only supports type='phi_redacted'; "
+                f"got {item_type!r}"
+            )
+        now = utcnow()
+        # Find an existing open row keyed by (case_id, type). Mirrors the
+        # SQLite partial unique index — only open rows are coalesced;
+        # resolved/dismissed history is preserved (no schema constraint
+        # against multiple closed rows for the same case).
+        existing_id: int | None = None
+        for it in self._items.values():
+            if (
+                it.case_id == case_id
+                and it.type == item_type
+                and it.status == _STATUS_OPEN
+            ):
+                existing_id = it.id
+                break
+        if existing_id is not None:
+            existing = self._items[existing_id]
+            updated = AttentionItem(
+                id=existing.id,
+                type=existing.type,
+                case_id=existing.case_id,
+                affected_user=existing.affected_user,
+                severity=severity,
+                details=details,
+                status=existing.status,
+                created_at=existing.created_at,
+                created_by=existing.created_by,
+                resolved_at=existing.resolved_at,
+                resolved_by=existing.resolved_by,
+                resolution_note=existing.resolution_note,
+                updated_at=now,
+            )
+            self._items[existing_id] = updated
+            return updated
+        # Insert path. Allocate a new id consistent with the rest of the
+        # test fake — autoincrement off max existing id, falling back
+        # to 1 when empty.
+        new_id = (max(self._items, default=0) + 1)
+        inserted = AttentionItem(
+            id=new_id,
+            type=item_type,
+            case_id=case_id,
+            affected_user=affected_user,
+            severity=severity,
+            details=details,
+            status=_STATUS_OPEN,
+            created_at=now,
+            created_by="system_worker",
+            resolved_at=None,
+            resolved_by=None,
+            resolution_note=None,
+            updated_at=now,
+        )
+        self._items[new_id] = inserted
+        if case_id is not None:
+            self._flagged.add(case_id)
+        return inserted
+
     def _transition(
         self,
         item_id: int,
@@ -495,6 +647,7 @@ class InMemoryAttentionItemsRepository:
             resolved_at=now,
             resolved_by=by,
             resolution_note=item.resolution_note,
+            updated_at=item.updated_at,
         )
         self._items[item_id] = updated
         self._audit.append({

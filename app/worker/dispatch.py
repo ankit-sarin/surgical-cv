@@ -204,12 +204,30 @@ def dispatch_marker(
             detail=f"case {marker.ucd_fil_id} not present in case_manifest.csv",
         )
 
-    # Brief #3.5a: scan the manifest's notes for PHI and redact in
-    # place before any downstream stage runs. The structured scan
-    # result is intentionally discarded here; Brief #3.5b will
-    # consume it at this call site to emit a rollup
-    # ``phi_redacted`` attention item when the result is non-empty.
-    redact_case_notes(paths, marker.ucd_fil_id)
+    # Brief #3.5a/b: scan the manifest's notes for PHI and redact in
+    # place before any downstream stage runs. If the scan surfaced any
+    # categories, emit a per-case rollup ``phi_redacted`` attention
+    # item — the repo's upsert coalesces retries onto a single row,
+    # so the surgeon sees one persistent flag per case, not one per
+    # marker-reprocess. The atomic upsert means a worker restart
+    # between the scrub and the upsert leaves the manifest already
+    # redacted; the next pass simply yields ``{}`` and skips the
+    # emit, which is the right semantics — no item without PHI.
+    scan_result = redact_case_notes(paths, marker.ucd_fil_id)
+    if scan_result:
+        from app.phi import format_phi_details
+        from app.repos.attention import SqliteAttentionItemsRepository
+        from app.worker.failures import _lookup_username_for_slug
+
+        details = format_phi_details(scan_result)
+        if details:
+            SqliteAttentionItemsRepository().upsert_by_case_and_type(
+                case_id=marker.ucd_fil_id,
+                item_type="phi_redacted",
+                affected_user=_lookup_username_for_slug(marker.surgeon),
+                severity="normal",
+                details=details,
+            )
 
     ensure_intake_row(
         paths, marker.ucd_fil_id, marker.segments, marker.submitted_at

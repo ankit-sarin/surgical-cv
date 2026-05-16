@@ -124,22 +124,33 @@ def write_attention_item(
     severity: str,
     details: str,
 ) -> int:
-    """Insert one attention_items row. Returns the new row id."""
+    """Insert one attention_items row. Returns the new row id.
+
+    Brief #3.5b: ``updated_at`` is set equal to ``created_at`` at
+    insert time so first-emit rows have a sensible value without
+    needing a separate UPDATE. The upsert path
+    (``upsert_by_case_and_type`` on the repo) advances ``updated_at``
+    on conflict; this plain INSERT path doesn't see conflicts because
+    its callers (verify_soft_fail / pipeline_failure / orphan /
+    malformed) aren't constrained by the phi-redacted-only unique
+    index."""
+    now = utcnow()
     conn = connect()
     try:
         cursor = conn.execute(
             "INSERT INTO attention_items "
             "(type, case_id, affected_user, severity, details, "
-            " created_at, created_by, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'open')",
+            " created_at, created_by, updated_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')",
             (
                 item_type,
                 case_id,
                 affected_user,
                 severity,
                 details,
-                utcnow(),
+                now,
                 SYSTEM_WORKER_USERNAME,
+                now,
             ),
         )
         conn.commit()
