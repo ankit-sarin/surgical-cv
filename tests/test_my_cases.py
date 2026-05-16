@@ -366,8 +366,8 @@ def test_render_detail_for_owned_case_renders_panel(
     assert "Procedure" in metadata
     assert "seg-a.mp4" in segments
     assert "seg-b.mp4" in segments
-    assert "intake:" in timestamps
-    assert "verify:" in timestamps
+    assert "Intake:" in timestamps
+    assert "Verified on:" in timestamps
     assert group_update["visible"] is True
 
 

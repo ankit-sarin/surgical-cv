@@ -1054,10 +1054,10 @@ def _format_timestamps_md(state: dict | None) -> str:
         return "_Timestamps: pending_"
     pieces = []
     for label, key in (
-        ("intake", "intake_ts"),
-        ("concat", "concat_ts"),
-        ("deid", "deid_ts"),
-        ("verify", "verify_ts"),
+        ("Intake", "intake_ts"),
+        ("Segments Concatenated on", "concat_ts"),
+        ("Deidentified on", "deid_ts"),
+        ("Verified on", "verify_ts"),
     ):
         parsed = _parse_iso_or_none(state.get(key))
         pieces.append(
