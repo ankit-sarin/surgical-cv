@@ -333,13 +333,15 @@ def test_resolve_writes_audit_row_with_documented_shape(app_env):
     rows = _read_audit_rows(app_env)
     assert len(rows) == 1
     audit = rows[0]
-    assert audit["admin_username"] == "asarin"
+    assert audit["actor_username"] == "asarin"
+    assert audit["actor_role"] == "surgeon"
     assert audit["action"] == "attention.resolve"
     assert audit["target_kind"] == "attention_item"
     assert audit["target_id"] == "42"
     assert audit["before_value"] == "open"
     assert audit["after_value"] == "resolved"
     assert audit["reason"] == SURGEON_AUDIT_REASON
+    assert audit["resolved_on_behalf_of"] is None
     assert audit["created_at"]  # populated
 
 

@@ -33,11 +33,18 @@ from app.exceptions import ScopeViolationError
 
 
 # Canonical reason sentinel for surgeon-initiated state transitions.
-# admin_audit.reason is NOT NULL per schema; the column name is
-# misleading for surgeon actors (v23 plan note: rename to actor_username
-# + actor_role; out of scope for this brief). The sentinel keeps the
-# audit row honest about the actor type until then.
+# admin_audit.reason is NOT NULL per schema. Brief #4 renamed
+# admin_username → actor_username and added actor_role; the surgeon
+# self-service writes record actor_role='surgeon' and use this
+# sentinel for reason. Admin writes pass the operator-supplied
+# free-text reason instead.
 SURGEON_AUDIT_REASON = "(surgeon-initiated)"
+
+# Brief #4: minimum reason length enforced at the repo boundary so a
+# UI-bypass call (curl, test fake, mis-firing handler) can't write a
+# blank-reason admin_audit row. Mirrored client-side in the Gradio
+# tab for inline UX, but the server check is the authoritative gate.
+ADMIN_REASON_MIN_LENGTH = 10
 
 
 # Action verbs allowed on the audit log. Keep the strings short and
@@ -151,6 +158,16 @@ class AttentionItemsRepository(Protocol):
         future history views."""
         ...
 
+    def list_all(
+        self,
+        status: Literal["open", "resolved", "dismissed"] = "open",
+    ) -> list[AttentionItem]:
+        """Brief #4: unscoped cross-silo list for the admin Action
+        Required tab. Same ordering as :meth:`list_for_user` (newest
+        first by ``created_at``, tiebreak ``id`` DESC). No role check
+        inside the repo — auth lives at the admin mount."""
+        ...
+
     def resolve(self, item_id: int, by: str) -> AttentionItem:
         """Transition open → resolved. Validates existence, status, and
         scope; writes an audit row. Returns the updated row."""
@@ -188,6 +205,33 @@ class AttentionItemsRepository(Protocol):
         the plain INSERT path in :func:`write_attention_item`)."""
         ...
 
+    def admin_resolve(
+        self,
+        item_id: int,
+        by_admin: str,
+        *,
+        reason: str,
+        on_behalf_of: str | None,
+    ) -> AttentionItem:
+        """Brief #4: admin-side resolve. Bypasses the surgeon-side
+        action-type validation and scope check (admin is the override
+        path). Writes one ``admin_audit`` row with ``actor_role='admin'``
+        and the surgeon-side ``resolved_on_behalf_of`` column populated
+        when the admin is acting on a surgeon's behalf."""
+        ...
+
+    def admin_dismiss(
+        self,
+        item_id: int,
+        by_admin: str,
+        *,
+        reason: str,
+    ) -> AttentionItem:
+        """Brief #4: admin-side dismiss. Same shape as
+        :meth:`admin_resolve` minus the on-behalf-of column (dismiss
+        is "this never required surgeon action" — no surgeon to credit)."""
+        ...
+
 
 # ----- shared validation helpers -----
 
@@ -214,6 +258,25 @@ def _validate_action_for_type(
             f"item type {item_type!r} expects action {expected!r}, "
             f"got {action!r}",
         )
+
+
+def _validate_admin_reason(item_id: int, reason: str) -> str:
+    """Server-side gate for admin dismiss/resolve. The Gradio UI does an
+    inline check, but never trust the client. Returns the stripped
+    reason so callers can persist a normalized value."""
+    if reason is None:
+        raise ValueError(
+            f"admin action on attention item {item_id} requires a reason "
+            f"(got None)"
+        )
+    stripped = reason.strip()
+    if len(stripped) < ADMIN_REASON_MIN_LENGTH:
+        raise ValueError(
+            f"admin action on attention item {item_id} requires a reason "
+            f"of at least {ADMIN_REASON_MIN_LENGTH} characters "
+            f"(got {len(stripped)})"
+        )
+    return stripped
 
 
 def _scope_check(item: AttentionItem, by: str, action: str) -> None:
@@ -291,6 +354,27 @@ class SqliteAttentionItemsRepository:
         finally:
             conn.close()
 
+    def list_all(
+        self,
+        status: Literal["open", "resolved", "dismissed"] = "open",
+    ) -> list[AttentionItem]:
+        conn = self._connect()
+        if conn is None:
+            return []
+        try:
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM attention_items "
+                    "WHERE status = ? "
+                    "ORDER BY created_at DESC, id DESC",
+                    (status,),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return []
+            return [AttentionItem.from_row(r) for r in rows]
+        finally:
+            conn.close()
+
     def count_actions_today(
         self, username: str, today_start_iso: str
     ) -> int:
@@ -301,7 +385,7 @@ class SqliteAttentionItemsRepository:
             try:
                 row = conn.execute(
                     "SELECT COUNT(*) FROM admin_audit "
-                    "WHERE admin_username = ? "
+                    "WHERE actor_username = ? "
                     "  AND action IN (?, ?) "
                     "  AND created_at >= ?",
                     (
@@ -384,6 +468,106 @@ class SqliteAttentionItemsRepository:
             audit_action=_AUDIT_ACTION_DISMISS,
         )
 
+    def admin_resolve(
+        self,
+        item_id: int,
+        by_admin: str,
+        *,
+        reason: str,
+        on_behalf_of: str | None,
+    ) -> AttentionItem:
+        return self._admin_transition(
+            item_id, by_admin,
+            new_status=_STATUS_RESOLVED,
+            audit_action=_AUDIT_ACTION_RESOLVE,
+            reason=reason,
+            on_behalf_of=on_behalf_of,
+        )
+
+    def admin_dismiss(
+        self,
+        item_id: int,
+        by_admin: str,
+        *,
+        reason: str,
+    ) -> AttentionItem:
+        return self._admin_transition(
+            item_id, by_admin,
+            new_status=_STATUS_DISMISSED,
+            audit_action=_AUDIT_ACTION_DISMISS,
+            reason=reason,
+            on_behalf_of=None,
+        )
+
+    def _admin_transition(
+        self,
+        item_id: int,
+        by_admin: str,
+        *,
+        new_status: str,
+        audit_action: str,
+        reason: str,
+        on_behalf_of: str | None,
+    ) -> AttentionItem:
+        """Admin override path. Skips surgeon-side validation
+        (action-type, scope) — the admin queue is the override
+        surface for both. Still gates on existence + open status so
+        a double-click race can't double-write audit rows."""
+        stripped_reason = _validate_admin_reason(item_id, reason)
+        conn = connect(self._db_path_override)
+        try:
+            row = conn.execute(
+                "SELECT * FROM attention_items WHERE id = ?",
+                (item_id,),
+            ).fetchone()
+            if row is None:
+                raise AttentionItemNotFoundError(
+                    item_id, f"no attention_items row with id={item_id}"
+                )
+            item = AttentionItem.from_row(row)
+            if item.status != _STATUS_OPEN:
+                raise AttentionItemAlreadyClosedError(
+                    item_id,
+                    f"attention_items id={item_id} has status "
+                    f"{item.status!r}; only 'open' items are actionable",
+                )
+
+            now = utcnow()
+            conn.execute(
+                "UPDATE attention_items "
+                "SET status = ?, resolved_at = ?, resolved_by = ? "
+                "WHERE id = ?",
+                (new_status, now, by_admin, item_id),
+            )
+            conn.execute(
+                "INSERT INTO admin_audit "
+                "(actor_username, actor_role, action, target_kind, target_id, "
+                " before_value, after_value, reason, "
+                " resolved_on_behalf_of, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    by_admin,
+                    "admin",
+                    audit_action,
+                    "attention_item",
+                    str(item_id),
+                    _STATUS_OPEN,
+                    new_status,
+                    stripped_reason,
+                    on_behalf_of,
+                    now,
+                ),
+            )
+            conn.commit()
+
+            updated = conn.execute(
+                "SELECT * FROM attention_items WHERE id = ?",
+                (item_id,),
+            ).fetchone()
+            return AttentionItem.from_row(updated)
+        finally:
+            conn.close()
+
     def _transition(
         self,
         item_id: int,
@@ -433,11 +617,12 @@ class SqliteAttentionItemsRepository:
             )
             conn.execute(
                 "INSERT INTO admin_audit "
-                "(admin_username, action, target_kind, target_id, "
+                "(actor_username, actor_role, action, target_kind, target_id, "
                 " before_value, after_value, reason, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     by,
+                    "surgeon",
                     audit_action,
                     "attention_item",
                     str(item_id),
@@ -517,12 +702,22 @@ class InMemoryAttentionItemsRepository:
         matching.sort(key=lambda it: (it.created_at, it.id), reverse=True)
         return matching
 
+    def list_all(
+        self,
+        status: Literal["open", "resolved", "dismissed"] = "open",
+    ) -> list[AttentionItem]:
+        matching = [
+            it for it in self._items.values() if it.status == status
+        ]
+        matching.sort(key=lambda it: (it.created_at, it.id), reverse=True)
+        return matching
+
     def count_actions_today(
         self, username: str, today_start_iso: str
     ) -> int:
         return sum(
             1 for row in self._audit
-            if row["admin_username"] == username
+            if row["actor_username"] == username
             and row["action"] in (_AUDIT_ACTION_RESOLVE, _AUDIT_ACTION_DISMISS)
             and row["created_at"] >= today_start_iso
         )
@@ -538,6 +733,90 @@ class InMemoryAttentionItemsRepository:
             item_id, by, action="dismiss", new_status=_STATUS_DISMISSED,
             audit_action=_AUDIT_ACTION_DISMISS,
         )
+
+    def admin_resolve(
+        self,
+        item_id: int,
+        by_admin: str,
+        *,
+        reason: str,
+        on_behalf_of: str | None,
+    ) -> AttentionItem:
+        return self._admin_transition(
+            item_id, by_admin,
+            new_status=_STATUS_RESOLVED,
+            audit_action=_AUDIT_ACTION_RESOLVE,
+            reason=reason,
+            on_behalf_of=on_behalf_of,
+        )
+
+    def admin_dismiss(
+        self,
+        item_id: int,
+        by_admin: str,
+        *,
+        reason: str,
+    ) -> AttentionItem:
+        return self._admin_transition(
+            item_id, by_admin,
+            new_status=_STATUS_DISMISSED,
+            audit_action=_AUDIT_ACTION_DISMISS,
+            reason=reason,
+            on_behalf_of=None,
+        )
+
+    def _admin_transition(
+        self,
+        item_id: int,
+        by_admin: str,
+        *,
+        new_status: str,
+        audit_action: str,
+        reason: str,
+        on_behalf_of: str | None,
+    ) -> AttentionItem:
+        stripped_reason = _validate_admin_reason(item_id, reason)
+        item = self._items.get(item_id)
+        if item is None:
+            raise AttentionItemNotFoundError(
+                item_id, f"no attention item with id={item_id}"
+            )
+        if item.status != _STATUS_OPEN:
+            raise AttentionItemAlreadyClosedError(
+                item_id,
+                f"attention item id={item_id} has status {item.status!r}; "
+                f"only 'open' items are actionable",
+            )
+        now = utcnow()
+        updated = AttentionItem(
+            id=item.id,
+            type=item.type,
+            case_id=item.case_id,
+            affected_user=item.affected_user,
+            severity=item.severity,
+            details=item.details,
+            status=new_status,
+            created_at=item.created_at,
+            created_by=item.created_by,
+            resolved_at=now,
+            resolved_by=by_admin,
+            resolution_note=item.resolution_note,
+            updated_at=item.updated_at,
+        )
+        self._items[item_id] = updated
+        self._audit.append({
+            "actor_username": by_admin,
+            "actor_role": "admin",
+            "action": audit_action,
+            "target_kind": "attention_item",
+            "target_id": str(item_id),
+            "before_value": _STATUS_OPEN,
+            "after_value": new_status,
+            "reason": stripped_reason,
+            "resolved_on_behalf_of": on_behalf_of,
+            "created_at": now,
+        })
+        return updated
 
     def upsert_by_case_and_type(
         self,
@@ -651,13 +930,15 @@ class InMemoryAttentionItemsRepository:
         )
         self._items[item_id] = updated
         self._audit.append({
-            "admin_username": by,
+            "actor_username": by,
+            "actor_role": "surgeon",
             "action": audit_action,
             "target_kind": "attention_item",
             "target_id": str(item_id),
             "before_value": _STATUS_OPEN,
             "after_value": new_status,
             "reason": SURGEON_AUDIT_REASON,
+            "resolved_on_behalf_of": None,
             "created_at": now,
         })
         return updated

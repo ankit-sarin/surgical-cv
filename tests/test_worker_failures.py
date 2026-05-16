@@ -278,11 +278,14 @@ def test_record_malformed_quarantines_and_logs(tmp_path, app_env):
     assert len(items) == 1
     assert items[0]["type"] == TYPE_MALFORMED_MARKER
     assert items[0]["case_id"] is None
-    # F-030: details now carries the curated generic message; full path +
-    # parse-error text moved to the systemd journal (covered in the new
-    # F-030 tests below).
+    # Brief #4: details still carries the curated generic message
+    # prefix, with the marker basename appended in a parenthesized
+    # suffix so the admin AR can identify which file failed.
+    # ``affected_user = system_worker`` — these rows never reach a
+    # surgeon UI, so the F-030 generic-only constraint doesn't apply.
     from app.worker.failures import _MALFORMED_GENERIC_MSG
-    assert items[0]["details"] == _MALFORMED_GENERIC_MSG
+    assert items[0]["details"].startswith(_MALFORMED_GENERIC_MSG)
+    assert bad.name in items[0]["details"]
 
 
 # ----- F-006: stderr scrubbing into attention_items.details -----
@@ -489,9 +492,12 @@ def test_write_attention_item_closes_connection(app_env, monkeypatch):
 
 
 def test_record_malformed_details_omits_nas_path_and_reason(tmp_path, app_env):
-    """F-030: attention_items.details must contain only the curated generic
-    message — no NAS path, no parse-error text. Surgeon UI surface stays
-    free of internal infrastructure strings."""
+    """Brief #4 relaxes the F-030 details constraint for malformed_marker
+    rows specifically (admin-routed, never surgeon-visible) — the marker
+    *basename* may appear in details, but the full NAS path and the
+    parse-error reason must still stay out. Those still leak NAS-internal
+    structure (raw-<surgeon>/ directories, Python traceback shapes) that
+    don't belong on the AR card."""
     from app.worker.failures import _MALFORMED_GENERIC_MSG
 
     ensure_system_worker_user()
@@ -506,8 +512,11 @@ def test_record_malformed_details_omits_nas_path_and_reason(tmp_path, app_env):
     items = _read_attention_items()
     assert len(items) == 1
     details = items[0]["details"]
-    assert details == _MALFORMED_GENERIC_MSG
-    # Belt-and-suspenders.
+    # Generic message prefix + basename suffix is the post-Brief-#4 shape.
+    assert details.startswith(_MALFORMED_GENERIC_MSG)
+    assert bad.name in details
+    # Load-bearing exclusions: the full NAS path and the surgeon folder
+    # path stay out; the parse-error string stays in the journal only.
     assert str(bad) not in details
     assert "raw-sarin" not in details
     assert "JSON parse error" not in details

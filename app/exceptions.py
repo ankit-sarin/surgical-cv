@@ -24,3 +24,18 @@ class ScopeViolationError(Exception):
         self.action = action
         self.scope_at_time = scope_at_time
         super().__init__(f"scope violation: {action} on {resource}")
+
+
+class MultipleClaimsError(Exception):
+    """Pipeline-state corruption: a single BDV source file appears in
+    multiple cases' ``raw_segments``. Should never happen given the
+    intake invariant (one segment → one case); surfacing this lets the
+    admin queue investigate rather than silently picking one claimant."""
+
+    def __init__(self, source_file: str, case_ids: list[str]):
+        self.source_file = source_file
+        self.case_ids = list(case_ids)
+        super().__init__(
+            f"source file {source_file!r} claimed by multiple cases: "
+            f"{self.case_ids}"
+        )

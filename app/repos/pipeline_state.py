@@ -43,6 +43,21 @@ class PipelineStateRepository(Protocol):
     def list_for_case_ids(self, case_ids: list[str]) -> dict[str, dict]: ...
     def get_state(self, ucd_fil_id: str) -> dict | None: ...
 
+    def list_all(self) -> list[dict]:
+        """Brief #4: unscoped read for the admin Global Dashboard tab.
+        Returns one dict per pipeline_state row, in CSV order. No role
+        check inside the repo — the auth boundary lives at the admin
+        mount point's role guard."""
+        ...
+
+    def case_id_for_source_file(self, filename: str) -> str | None:
+        """Brief #4: reverse lookup. Returns the ``ucd_fil_id`` that has
+        claimed ``filename`` in its ``raw_segments``, or ``None`` if no
+        case has claimed it. Raises :class:`MultipleClaimsError` if more
+        than one case claims the same source file — that's a pipeline
+        state corruption the admin queue should investigate."""
+        ...
+
 
 def _row_to_dict(row: PipelineStateRow) -> dict:
     """Surface a state row at the repo boundary as a dict with Python-typed
@@ -105,6 +120,20 @@ class CsvPipelineStateRepository:
                 return _row_to_dict(r)
         return None
 
+    def list_all(self) -> list[dict]:
+        return [_row_to_dict(r) for r in self._read_rows()]
+
+    def case_id_for_source_file(self, filename: str) -> str | None:
+        from app.exceptions import MultipleClaimsError
+
+        hits: list[str] = []
+        for r in self._read_rows():
+            if filename in r.raw_segments:
+                hits.append(r.ucd_fil_id)
+        if len(hits) > 1:
+            raise MultipleClaimsError(filename, hits)
+        return hits[0] if hits else None
+
 
 class InMemoryPipelineStateRepository:
     """Test fake. Initialize with ``{case_id: state_dict}``. Each
@@ -139,3 +168,17 @@ class InMemoryPipelineStateRepository:
     def get_state(self, ucd_fil_id: str) -> dict | None:
         row = self._states.get(ucd_fil_id)
         return dict(row) if row is not None else None
+
+    def list_all(self) -> list[dict]:
+        return [dict(row) for row in self._states.values()]
+
+    def case_id_for_source_file(self, filename: str) -> str | None:
+        from app.exceptions import MultipleClaimsError
+
+        hits = [
+            cid for cid, row in self._states.items()
+            if filename in (row.get("raw_segments") or [])
+        ]
+        if len(hits) > 1:
+            raise MultipleClaimsError(filename, hits)
+        return hits[0] if hits else None

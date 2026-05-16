@@ -75,6 +75,18 @@ SURGEON_TYPE_DISPLAY: dict[str, TypeDisplay] = {
             "case's text content."
         ),
     ),
+    # Brief #4: malformed_marker is admin-routed (affected_user =
+    # system_worker, never a surgeon), so the label/description live
+    # here primarily for the admin AR tab's render path. ``action_for_type``
+    # returns None for this key — admin AR uses its own dismiss/resolve
+    # surface rather than the surgeon-side dispatch table.
+    "malformed_marker": TypeDisplay(
+        label="Unrecognized BDV filename",
+        description=(
+            "A submitted case included a file the BDV recorder did not "
+            "name; the submission could not be processed automatically."
+        ),
+    ),
 }
 
 

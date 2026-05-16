@@ -99,16 +99,34 @@ CREATE UNIQUE INDEX idx_attention_phi_redacted_case_uniq
     ON attention_items (case_id)
     WHERE case_id IS NOT NULL AND type = 'phi_redacted';
 
+-- Brief #4: ``admin_audit`` is the audit log for state-changing actions
+-- against attention_items (and future admin-mediated mutations). The
+-- column name ``admin_username`` was misleading — surgeon self-service
+-- resolve/dismiss writes here too. The rename + new ``actor_role``
+-- discriminator (one of 'surgeon' / 'admin') keeps the table honest
+-- about who actually performed the action.
+--
+-- ``resolved_on_behalf_of`` is non-null only for admin-mediated
+-- "resolve on behalf of surgeon" actions; it carries the surgeon's
+-- username so the relationship is queryable rather than buried in
+-- the free-text ``reason``.
+--
+-- No DEFAULT on ``actor_role`` — application code MUST specify it on
+-- every insert. (The migration step uses a DEFAULT of 'admin' for the
+-- backfill of pre-existing rows, then drops it after data is in place
+-- so this schema.sql reflects the steady-state shape.)
 CREATE TABLE admin_audit (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    admin_username TEXT NOT NULL REFERENCES users(username),
-    action         TEXT NOT NULL,
-    target_kind    TEXT NOT NULL,
-    target_id      TEXT NOT NULL,
-    before_value   TEXT,
-    after_value    TEXT,
-    reason         TEXT NOT NULL,
-    created_at     TEXT NOT NULL
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_username        TEXT NOT NULL REFERENCES users(username),
+    actor_role            TEXT NOT NULL CHECK (actor_role IN ('surgeon', 'admin')),
+    action                TEXT NOT NULL,
+    target_kind           TEXT NOT NULL,
+    target_id             TEXT NOT NULL,
+    before_value          TEXT,
+    after_value           TEXT,
+    reason                TEXT NOT NULL,
+    resolved_on_behalf_of TEXT REFERENCES users(username),
+    created_at            TEXT NOT NULL
 );
 
 -- Time-range audit queries (audit log review by date window).

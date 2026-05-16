@@ -168,6 +168,13 @@ class CaseRepository(Protocol):
         expected_surgeon: str,
     ) -> SubmitResult: ...
 
+    def list_all(self) -> list[dict]:
+        """Brief #4: unscoped read for the admin Global Dashboard tab.
+        Returns every manifest row as a dict (post-``procedure_additional``
+        normalization, same shape as :meth:`get_case`). No role check
+        inside the repo — auth lives at the admin mount."""
+        ...
+
 
 class CsvCaseRepository:
     """Reads ``case_manifest.csv`` (path from ``CASE_MANIFEST_PATH`` or
@@ -231,6 +238,9 @@ class CsvCaseRepository:
     def case_belongs_to(self, case_id: str, folder_slug: str) -> bool:
         case = self.get_case(case_id)
         return case is not None and case.get("surgeon") == folder_slug
+
+    def list_all(self) -> list[dict]:
+        return [dict(r) for r in self._read_rows()]
 
     def submit_case(
         self,
@@ -356,6 +366,9 @@ class InMemoryCaseRepository:
     def case_belongs_to(self, case_id: str, folder_slug: str) -> bool:
         row = self._cases.get(case_id)
         return row is not None and row.get("surgeon") == folder_slug
+
+    def list_all(self) -> list[dict]:
+        return [dict(row) for row in self._cases.values()]
 
     def submit_case(
         self,

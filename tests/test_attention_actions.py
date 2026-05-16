@@ -90,5 +90,18 @@ def test_action_and_display_tables_share_the_same_keys():
     """Catches a drift bug where adding to one table forgets the other.
     Phi_redacted is in both as the pre-wire; if they diverge, the
     surgeon UI would render an action button for an unmapped type or a
-    label-less action."""
-    assert set(SURGEON_ACTION_BY_TYPE) == set(SURGEON_TYPE_DISPLAY)
+    label-less action.
+
+    Brief #4: ``malformed_marker`` is display-only (admin-routed; no
+    surgeon action surface), so the action table is a *subset* of the
+    display table rather than identical. Any display-only types must
+    be explicitly listed below — adding one to ``SURGEON_TYPE_DISPLAY``
+    without updating either ``SURGEON_ACTION_BY_TYPE`` or this allow-list
+    is the drift we want to catch."""
+    _DISPLAY_ONLY = {"malformed_marker"}
+    actionable_types = set(SURGEON_ACTION_BY_TYPE)
+    displayed_types = set(SURGEON_TYPE_DISPLAY)
+    # Every actionable type must have a display entry.
+    assert actionable_types <= displayed_types
+    # Every display-only type must be explicitly enumerated above.
+    assert displayed_types - actionable_types == _DISPLAY_ONLY

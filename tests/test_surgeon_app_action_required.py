@@ -357,7 +357,8 @@ def test_click_dismiss_on_verify_soft_fail_lands_audit(app_env):
     assert len(rows) == 1
     assert rows[0]["action"] == "attention.dismiss"
     assert rows[0]["target_id"] == str(item_id)
-    assert rows[0]["admin_username"] == "asarin"
+    assert rows[0]["actor_username"] == "asarin"
+    assert rows[0]["actor_role"] == "surgeon"
 
 
 def test_click_resolve_on_pipeline_failure_lands_audit(app_env):

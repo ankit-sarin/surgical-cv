@@ -214,12 +214,20 @@ def record_dispatch_outcome(marker: Marker, outcome: DispatchOutcome) -> None:
 def record_malformed(marker: MalformedMarker) -> None:
     """Log + quarantine path for parse-time failures. No surgeon lookup
     available (the marker is unparsed); affected_user falls back to
-    system_worker.
+    system_worker — these rows show up only in the admin AR (Brief #4
+    cross-silo list), never in any surgeon's AR tab.
 
-    F-030: ``attention_items.details`` is surgeon-visible (Action Required
-    tab). Path + parse-error text go to the systemd journal via the logger;
-    the row itself carries only the curated generic message so internal NAS
-    paths and Python parse-error strings never reach the surgeon UI."""
+    Brief #4: ``details`` now carries the marker filename basename so
+    the admin can identify which file failed. Filenames are not PHI
+    (the marker filename embeds the study code ``UCD-FIL-NNN`` only;
+    even malformed ones contain at most a corrupted/truncated case id).
+    Full path + parse-error text remain in the systemd journal — those
+    can leak NAS paths and Python tracebacks, which still don't belong
+    on the AR card.
+
+    F-030 (pre-Brief-#4) chose the generic message for surgeon-visibility
+    reasons; that concern doesn't apply here because malformed rows have
+    ``affected_user = system_worker`` and never reach a surgeon UI."""
     _log.warning(
         "malformed marker",
         extra={
@@ -232,6 +240,6 @@ def record_malformed(marker: MalformedMarker) -> None:
         affected_user=SYSTEM_WORKER_USERNAME,
         case_id=None,
         severity="normal",
-        details=_MALFORMED_GENERIC_MSG,
+        details=f"{_MALFORMED_GENERIC_MSG} (file: {marker.path.name})",
     )
     archive_marker(marker.path, "malformed")
