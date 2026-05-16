@@ -854,6 +854,195 @@ def test_polling_render_yields_fresh_footer(app_env, monkeypatch, tmp_path):
     assert first[_FOOTER_IDX] != second[_FOOTER_IDX]
 
 
+# ----- 3b. Per-session memoization (Brief #3.1.3) -----
+#
+# Production cycle source: My Cases emitted 100+ component updates on
+# every Timer tick + state change even when the underlying data was
+# unchanged. Svelte 5's reactive flush hit ``effect_update_depth_
+# exceeded`` on the 50-wide fanout. AR's 10-wide fanout stays under
+# the threshold. Memoization wraps render_my_cases with a per-session
+# diff: any output that matches the previous emit (or the component
+# default on first render) becomes ``gr.skip()``.
+
+
+_GR_SKIP_SENTINEL = {"__type__": "update"}
+
+
+def _is_skip(value) -> bool:
+    """``gr.skip()`` returns ``{"__type__": "update"}`` (no other
+    fields). A real gr.update() with kwargs carries those kwargs too,
+    so the equality check on the bare dict is a reliable detector."""
+    return isinstance(value, dict) and value == _GR_SKIP_SENTINEL
+
+
+def _memoized_request(username: str, session_id: str):
+    """Like ``_fake_request_for`` but carries a session_hash so the
+    memoization wrapper engages. Production gr.Request always carries
+    one; tests need to opt in."""
+    return types.SimpleNamespace(
+        cookies={SESSION_COOKIE_NAME: encode_session(username)},
+        session_hash=session_id,
+    )
+
+
+@pytest.fixture
+def clean_memo_cache():
+    """Clear the module-level memoization cache before and after each
+    test so test interleaving doesn't leak cached entries between
+    sessions."""
+    from app.surgeon_app import _MY_CASES_RENDER_CACHE
+    _MY_CASES_RENDER_CACHE.clear()
+    yield
+    _MY_CASES_RENDER_CACHE.clear()
+
+
+def test_render_without_session_hash_bypasses_memoization(
+    app_env, monkeypatch, tmp_path, clean_memo_cache,
+):
+    """The test-suite fake-request shape carries no ``session_hash``,
+    so render_my_cases must emit the full output tuple every time.
+    Preserves the surface every other test in this file relies on."""
+    from app.surgeon_app import (
+        _MAX_VISIBLE_MY_CASES_SLOTS, render_my_cases,
+    )
+    _seed_pipeline_state(monkeypatch, tmp_path, [])
+
+    out1 = render_my_cases(None, _fake_request_for("asarin"))
+    out2 = render_my_cases(None, _fake_request_for("asarin"))
+
+    # Both calls produce identical slot HTML (string, not gr.skip).
+    for i in range(_MAX_VISIBLE_MY_CASES_SLOTS):
+        group_update_1, html_1 = _slot(out1, i)
+        group_update_2, html_2 = _slot(out2, i)
+        assert not _is_skip(group_update_1)
+        assert not _is_skip(group_update_2)
+
+
+def test_render_with_session_hash_skips_unchanged_slots_on_second_call(
+    app_env, monkeypatch, tmp_path, clean_memo_cache,
+):
+    """Brief #3.1.3 core invariant: two consecutive renders with the
+    same session_hash + same inputs collapse all unchanged outputs to
+    ``gr.skip()``. Slots whose visibility + HTML didn't change between
+    calls must emit skip sentinels, not fresh values — that's what
+    keeps Svelte's flush off the depth limit."""
+    from app.surgeon_app import (
+        _MAX_VISIBLE_MY_CASES_SLOTS, render_my_cases,
+    )
+    _seed_pipeline_state(monkeypatch, tmp_path, [])
+
+    req = _memoized_request("asarin", "session-abc")
+    out1 = render_my_cases(None, req)
+    out2 = render_my_cases(None, req)
+
+    # asarin has 2 owned cases per conftest. Slots 0-1 are populated.
+    # On second call slot 0 + slot 1 must be skipped (no change since
+    # last emit); slots 2-49 stay hidden, also skipped.
+    for i in range(_MAX_VISIBLE_MY_CASES_SLOTS):
+        group_update, html = _slot(out2, i)
+        assert _is_skip(group_update), (
+            f"slot {i} group should be gr.skip() on second render, "
+            f"got {group_update!r}"
+        )
+        assert _is_skip(html), (
+            f"slot {i} html should be gr.skip() on second render, "
+            f"got {html!r}"
+        )
+
+
+def test_render_first_call_skips_hidden_slots_below_default(
+    app_env, monkeypatch, tmp_path, clean_memo_cache,
+):
+    """First-render fanout collapse: hidden slots' fresh output
+    (``visible=False``, empty html) matches the component default the
+    Blocks constructor seeded, so they emit ``gr.skip()`` even on the
+    initial render. Net: a 4-case surgeon's first render emits ~4
+    slot updates, not 50.
+
+    asarin has 2 cases → slots 0-1 emit fresh, slots 2-49 emit skip."""
+    from app.surgeon_app import (
+        _MAX_VISIBLE_MY_CASES_SLOTS, render_my_cases,
+    )
+    _seed_pipeline_state(monkeypatch, tmp_path, [])
+
+    req = _memoized_request("asarin", "first-load-session")
+    out = render_my_cases(None, req)
+
+    # Slots 0-1: real card content (not skip).
+    for i in range(2):
+        group_update, html = _slot(out, i)
+        assert not _is_skip(group_update), (
+            f"slot {i} (visible) should emit fresh value, got skip"
+        )
+        assert isinstance(html, str) and html.startswith("<article")
+
+    # Slots 2-49: hidden, match component default → skip.
+    for i in range(2, _MAX_VISIBLE_MY_CASES_SLOTS):
+        group_update, html = _slot(out, i)
+        assert _is_skip(group_update), (
+            f"slot {i} (hidden, default-equal) should emit "
+            f"gr.skip(), got {group_update!r}"
+        )
+        assert _is_skip(html), (
+            f"slot {i} (empty html) should emit gr.skip()"
+        )
+
+
+def test_render_emits_fresh_value_when_expansion_changes(
+    app_env, monkeypatch, tmp_path, clean_memo_cache,
+):
+    """Memoization correctness: when ``expanded_case_id`` toggles
+    between calls, the slot whose card HTML changes (the newly-
+    expanded one) must emit fresh markup, not skip. Other unchanged
+    positions stay skipped."""
+    from app.surgeon_app import (
+        _compute_my_cases_outputs, render_my_cases,
+    )
+    _seed_pipeline_state(monkeypatch, tmp_path, [])
+
+    req = _memoized_request("asarin", "expand-toggle-session")
+    # Look up the slot index via the unmemoized path so we can find
+    # UCD-FIL-001 even after memoization collapses the visible_cases
+    # state to gr.skip().
+    bootstrap = _compute_my_cases_outputs(None, req)
+    target_slot = _slot_index_for(bootstrap, "UCD-FIL-001")
+    assert target_slot is not None
+
+    # Now memoized renders: first collapsed, then expanded.
+    render_my_cases(None, req)
+    out = render_my_cases("UCD-FIL-001", req)
+
+    _, html = _slot(out, target_slot)
+    assert not _is_skip(html), (
+        f"expanded slot {target_slot} must emit fresh html, got skip"
+    )
+    assert "ds-card-expansion" in html
+
+
+def test_render_cache_is_per_session(
+    app_env, monkeypatch, tmp_path, clean_memo_cache,
+):
+    """Two sessions don't share cache state. Session A's second render
+    skips because A cached. Session B's first render emits fresh
+    because B's cache is empty — even though A already rendered the
+    same content."""
+    from app.surgeon_app import (
+        _MAX_VISIBLE_MY_CASES_SLOTS, render_my_cases,
+    )
+    _seed_pipeline_state(monkeypatch, tmp_path, [])
+
+    req_a = _memoized_request("asarin", "session-A")
+    req_b = _memoized_request("asarin", "session-B")
+    render_my_cases(None, req_a)
+    # Session B's first render — should emit fresh content for the 2
+    # visible slots regardless of session A's cache state.
+    out_b = render_my_cases(None, req_b)
+    for i in range(2):
+        group_update, html = _slot(out_b, i)
+        assert not _is_skip(group_update)
+        assert isinstance(html, str) and html.startswith("<article")
+
+
 # ----- 4. Integration via TestClient -----
 
 

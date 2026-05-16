@@ -1145,24 +1145,89 @@ def _my_case_card_html(
 
 # ----- render fn -----
 #
-# Brief #3.1.1 — slot-pool state graph rewritten.
+# Brief #3.1.1 — slot-pool state graph rewritten to drop per-slot
+# ``case_id_state`` fanout.
 #
-# The Brief #3.1 implementation wrote a fresh value to a per-slot
-# ``case_id_state`` on every render. With 50 slots, that fanned out to
-# 50 simultaneous state-change events per tick. Svelte 5's reactive
-# flush detected the cascade as ``effect_update_depth_exceeded`` once
-# the My Cases tab mounted (the AR tab at 10 slots stayed under the
-# threshold — same defect, smaller blast radius).
+# Brief #3.1.2 — dropped the ``expanded_state.change`` re-render
+# bridge; click handlers output the full render tuple directly,
+# matching the Action Required tab's pattern.
 #
-# Fix is structural: no per-slot identity states. A single shared
-# ``visible_cases_state`` list carries the slot→case-id mapping; each
-# slot's click handler closure-captures its slot index and reads the
-# shared list at click time. Render writes (a) the shared list and
-# (b) the per-slot component values (group visibility, html). Render
-# does NOT write back to ``expanded_state`` — that state
-# changes only via the click handler, and its ``.change`` event is the
-# single trigger that re-runs render after a click. The cycle is
-# broken structurally, not via a configuration toggle.
+# Brief #3.1.3 — per-session memoization of render outputs. With the
+# reactive topology cleaned up, the remaining cycle source was the
+# 50-wide Svelte flush fanout per render: every Timer tick and every
+# click emitted 100 component updates (50 gr.Group visibility + 50
+# gr.HTML values) even when the underlying data was unchanged. AR's
+# 10-wide fanout stayed under Svelte's flush-depth threshold; My
+# Cases' 50-wide didn't. The memoization wrapper compares each
+# render's output position-by-position against the previous emit
+# (cached server-side keyed on ``gr.Request.session_hash``) and
+# replaces unchanged positions with ``gr.skip()``. On a steady-state
+# tick with no data change the fanout collapses to ~1 update (the
+# footer timestamp). On the initial mount the fanout collapses to N
+# (number of visible cases) instead of 50 because all 46 hidden
+# slots' default-equal outputs skip.
+
+
+# Module-level memoization cache. Keyed by Gradio session_hash so each
+# surgeon's browser tab has its own cache; values are the previous
+# render output tuple as a list (so positional comparison is cheap).
+# Leak-by-design for v1 — sessions terminate when the browser closes;
+# entries persist for the lifetime of the process. A future cleanup
+# would bind eviction to ``Blocks.unload`` once we wire that up.
+_MY_CASES_RENDER_CACHE: dict[str, list] = {}
+
+
+def _my_cases_default_outputs() -> list:
+    """The baseline against which the first render of a session is
+    compared. Matches each output component's initial value at build
+    time — see :func:`_build_my_cases`.
+
+    Critical detail: the empty-state Markdown is initialized
+    ``visible=True``, so the no-cases path's
+    ``gr.update(value=..., visible=True)`` matches the default and
+    skips on first render, leaving the initial DOM in place rather
+    than re-emitting the same value (which would itself contribute to
+    the Svelte flush)."""
+    out: list = [
+        "",                                                  # header_md
+        gr.update(value=_EMPTY_CASES_MARKDOWN, visible=True),  # empty_state_md
+        "",                                                  # footer_md
+        [],                                                  # visible_cases_state
+    ]
+    for _ in range(_MAX_VISIBLE_MY_CASES_SLOTS):
+        out.extend([
+            gr.update(visible=False),                        # slot group default
+            "",                                              # slot html default
+        ])
+    return out
+
+
+def _memoize_my_cases(fresh: tuple, request: gr.Request | None) -> tuple:
+    """Replace any output position whose fresh value equals the cached
+    previous emit (or the component default on first render) with
+    ``gr.skip()``. Update the cache with the fresh tuple.
+
+    No-op (returns ``fresh`` unchanged) when ``request`` has no
+    ``session_hash`` attribute — that path is reserved for tests +
+    direct invocations that need to assert on the full output."""
+    session_id = getattr(request, "session_hash", None)
+    if not session_id:
+        return fresh
+
+    prev = _MY_CASES_RENDER_CACHE.get(session_id) or _my_cases_default_outputs()
+    skip_marker = gr.skip()
+    out: list = []
+    for new_val, old_val in zip(fresh, prev):
+        # ``==`` covers dicts (gr.update markers), strings (markdown
+        # values + HTML strings), lists (visible_cases payload), None
+        # (state initial). Type mismatch falls through to inequality.
+        try:
+            unchanged = new_val == old_val
+        except Exception:
+            unchanged = False
+        out.append(skip_marker if unchanged else new_val)
+    _MY_CASES_RENDER_CACHE[session_id] = list(fresh)
+    return tuple(out)
 
 
 def _empty_my_cases_outputs(now: datetime) -> tuple:
@@ -1201,7 +1266,25 @@ def render_my_cases(
     moved out of scope, or the surgeon submitted >50 new cases between
     renders), render simply doesn't mark any card expanded — the stale
     state value persists harmlessly until the next click validates it
-    via the visible_cases list."""
+    via the visible_cases list.
+
+    Brief #3.1.3: the fresh output tuple is passed through
+    :func:`_memoize_my_cases` so any position whose value matches the
+    previous emit for this session is replaced with ``gr.skip()``,
+    collapsing the 50-wide Svelte flush fanout to only the slots
+    whose content actually changed."""
+    fresh = _compute_my_cases_outputs(expanded_case_id, request)
+    return _memoize_my_cases(fresh, request)
+
+
+def _compute_my_cases_outputs(
+    expanded_case_id: str | None, request: gr.Request | None
+) -> tuple:
+    """Pure render — produces the fresh output tuple without any
+    memoization. Separated so the memoization wrapper can apply
+    uniformly and so tests can introspect the unmemoized shape by
+    calling this fn directly when needed (the public
+    :func:`render_my_cases` is what production wiring calls)."""
     scope = _scope_from_request(request)
     now = _utcnow()
     if scope is None:
