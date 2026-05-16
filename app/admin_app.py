@@ -121,7 +121,10 @@ def _state_latest_ts(state: dict | None) -> datetime | None:
 
 
 def _identity(request: gr.Request) -> str:
-    return identity_string_for_request(request)
+    # Append a logout link so the user has an explicit sign-out
+    # affordance. ``/logout`` is the role-agnostic FastAPI route that
+    # clears the session cookie and redirects to ``/login``.
+    return f"{identity_string_for_request(request)} · [Sign out](/logout)"
 
 
 def _list_surgeon_users() -> list[dict]:
