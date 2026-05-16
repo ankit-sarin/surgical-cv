@@ -148,14 +148,18 @@ MY_CASES_CSS = """
 /* Expandable cards — Brief #3.1 variant of .ds-card. Used by surgeon
    "My Cases" v2 where each card collapses to header-only and expands
    inline on click. Synced from
-   ~/.claude/skills/digitalsurgeon-brand/assets/gradio-theme.css. */
+   ~/.claude/skills/digitalsurgeon-brand/assets/gradio-theme.css.
+
+   Brief #3.1.5: hover affordance is shadow-only. The earlier
+   compositor-layer affordance produced the Svelte 5
+   effect_update_depth_exceeded cycle on My Cases mount — see
+   docs/audits/brief_3_1_5_brand_css_cycle.md for the post-mortem and
+   the substrings the regression test forbids. */
 .ds-card-expandable {
   cursor: pointer;
-  transition: box-shadow 120ms ease, transform 120ms ease;
 }
 .ds-card-expandable:hover {
   box-shadow: 0 2px 6px rgba(44, 44, 44, 0.08);
-  transform: translateY(-1px);
 }
 .ds-card-expansion {
   border-top: 1px solid var(--ds-border);

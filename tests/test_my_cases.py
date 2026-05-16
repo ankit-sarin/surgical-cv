@@ -328,6 +328,41 @@ def test_surgeon_css_constant_carries_card_classes():
     assert ".ds-card-status-stuck" in SURGEON_CSS
 
 
+def test_surgeon_css_has_no_transform_or_layout_transitions_on_cards():
+    """Brief #3.1.5 regression guard: the brand CSS must not declare
+    a ``transform`` property or a layout-affecting ``transition`` on
+    the ``.ds-card-expandable`` rule (or anywhere a dynamically-
+    mounted card composes onto).
+
+    ``transform`` creates a compositor layer; combining it with
+    ``transition: transform`` races against ResizeObserver on
+    dynamically-mounted Svelte 5 cards and produces the production
+    ``effect_update_depth_exceeded`` loop at ~13 errors/sec while
+    the My Cases tab is active. Color / opacity transitions are
+    safe (paint-only, no layout); this test specifically forbids
+    the transform / max-height / height patterns that DO cause
+    layout recalc."""
+    from app.surgeon_app import SURGEON_CSS
+
+    # The classifier — keys are descriptive, values are substrings
+    # we forbid. Single-pass scan keeps the error message useful.
+    forbidden = {
+        "transform on cards": "transform: translateY",
+        "transition transform": "transition: transform",
+        "transition shorthand including transform":
+            "transition: box-shadow 120ms ease, transform",
+        "max-height transition": "transition: max-height",
+        "height transition": "transition: height ",
+    }
+    for label, needle in forbidden.items():
+        assert needle not in SURGEON_CSS, (
+            f"forbidden CSS pattern ({label!r}: {needle!r}) reappeared "
+            f"in SURGEON_CSS — see Brief #3.1.5. Layout-affecting "
+            f"transitions on dynamically-mounted .ds-card-expandable "
+            f"cards trigger Svelte 5 effect_update_depth_exceeded."
+        )
+
+
 def test_surgeon_theme_uses_teal_primary_hue_not_orange():
     """Gradio default theme uses primary_hue=colors.orange. We swap to
     teal so the active tab indicator picks up brand colors."""
