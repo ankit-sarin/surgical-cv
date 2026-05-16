@@ -6,7 +6,12 @@ Read primer.md for current project state before starting work.
 ~/projects/surgical-cv
 
 ## Deployment
-No deployed services yet. Future services will follow global conventions (systemd + Cloudflare Tunnel).
+- **`surgical-cv-app.service`** — FastAPI + Gradio surgeon/admin app at `https://cv.digitalsurgeon.dev` via Cloudflare Tunnel, port 7865.
+  - Surgeon UI mounted at `/app` (DSM-authenticated, `role='surgeon'`).
+  - Admin UI mounted at `/admin` (DSM-authenticated, `role='admin'`).
+  - `/login`, `/logout`, `/login/otp` are role-agnostic FastAPI routes.
+  - Restart: `sudo systemctl restart surgical-cv-app.service`. WorkingDirectory is the repo; `.env` carries `APP_SESSION_SECRET` and `NAS_DSM_URL`. `APP_DB_PATH` defaults to `app/db/app.db`.
+- **Worker (`surgical-cv-worker.timer` / `.service`)** — systemd templates in `deploy/systemd/`, not installed automatically. Per `deploy/README.md`: user-scoped install with `OnUnitActiveSec=5min`, `AccuracySec=30s`, `Persistent=true`.
 
 ## Purpose
 End-to-end surgical video research: FFmpeg de-identification pipeline (raw → deid), dataset preprocessing, annotation tooling, phase recognition, instrument detection, model training/evaluation, and future deployed services. Targets ~3 publications: (1) dataset/benchmark paper, (2) phase recognition model, (3) clinical application (AI-assisted video editing).
@@ -162,8 +167,8 @@ Read paths (`status`, `metadata --show`) and dry-runs (`metadata --edit` without
 ## State Files & Atomicity
 
 Two CSVs live under `/mnt/nas/or-raw/`:
-- `case_manifest.csv` — per-case manifest (8 columns; rows mutated only via `metadata --edit --confirm`)
-- `pipeline_state.csv` — per-case stage tracking (`raw_segments`, `concat_filename`, `deid_filename`, `stage`, `concat_ts`, `deid_ts`, `verify_ts`, `verification_notes`)
+- `case_manifest.csv` — per-case manifest (10 columns post Spec J: `ucd_fil_id`, `surgeon`, `case_year`, `or_room`, `procedure_primary`, `procedure_additional` (JSON-encoded list), `approach`, `conversion_target`, `indication`, `notes`). Rows mutated only via `metadata --edit --confirm` or the surgeon intake submit path.
+- `pipeline_state.csv` — per-case stage tracking (`ucd_fil_id`, `raw_segments`, `concat_filename`, `deid_filename`, `stage`, `intake_ts`, `concat_ts`, `deid_ts`, `verify_ts`, `verification_notes`)
 
 All mutations go through `CsvTable.transaction()` in `pipeline/csv_io.py`:
 1. Acquire `fcntl.LOCK_EX` on a sibling `.lock` file
@@ -173,6 +178,75 @@ All mutations go through `CsvTable.transaction()` in `pipeline/csv_io.py`:
 5. On exception inside the `with`: skip the commit step entirely — the original file is untouched
 
 This is the only sanctioned write path. Direct `open(csv, "w")` is forbidden.
+
+## App Database & Admin Audit (Brief #4)
+
+SQLite at `app/db/app.db`. Six tables: `specialties`, `users`, `picklist_values`,
+`attention_items`, `admin_audit`, `scope_violation_log`. Brief #4 introduced two
+schema changes:
+
+- `attention_items.updated_at TEXT NOT NULL` (Brief #3.5b in `schema.sql`,
+  migrated live in #4a) — advances on every `upsert_by_case_and_type` call;
+  equals `created_at` for plain inserts. The companion partial unique index
+  `idx_attention_phi_redacted_case_uniq` enforces "exactly one open
+  `phi_redacted` row per case_id" — scope intentionally narrowed to that
+  type only so existing retry semantics on `verify_soft_fail` /
+  `pipeline_failure` / `orphan_marker` rows (today plain INSERTs) keep
+  working.
+- `admin_audit` renamed `admin_username` → `actor_username`, added
+  `actor_role TEXT NOT NULL CHECK (actor_role IN ('surgeon', 'admin'))`, and
+  added `resolved_on_behalf_of TEXT` nullable. Application code MUST specify
+  `actor_role` on every insert (no DEFAULT in steady-state schema.sql; the
+  migration's ALTER carries a `DEFAULT 'admin'` for backfill only).
+
+Migration runner: `python -m app.db.migrate_brief_4 --dry-run | --commit`.
+Writes `app.db.pre-brief-4.<utc-ts>.bak` before any DDL fires under
+`--commit`. No general migration tooling yet — that's Brief #5. Existing
+`scripts/migrate_manifest_spec_j.py` is the CSV-only one-shot precedent;
+SQLite migrations live under `app/db/` because `scripts/` is gitignored.
+
+## Admin App (Brief #4)
+
+Gradio Blocks at `app/admin_app.py`, mounted at `/admin` with
+`_gradio_auth_dep("admin")`. Two tabs:
+
+- **Global Dashboard** — single `gr.HTML` stat strip (5 tiles via CSS grid,
+  no flex-wrap — Brief #3.1 cycle avoidance) + per-surgeon `gr.DataFrame`.
+  Stats: total cases, in intake, open AR items, high-severity AR, stale
+  (no activity >7d). Per-surgeon table groups by `users.folder_slug`,
+  alphabetical by username.
+- **Action Required** — cross-silo `gr.DataFrame` (one row per open AR item,
+  surgeon-as-folder_slug visible) with four filters
+  (type / surgeon / severity / older-than-N-days), all AND-together.
+  Row select populates a detail panel; admin dismisses with a free-text
+  reason (server-side gated at `ADMIN_REASON_MIN_LENGTH = 10` chars) or
+  resolves on behalf of a surgeon (the surgeon's username lands in
+  `admin_audit.resolved_on_behalf_of`). `admin_resolve` / `admin_dismiss`
+  on the repo bypass the surgeon-side type/scope validation — admin is the
+  override path.
+
+CSS lessons enforced: text-affecting rules only (`font-family`, `color`,
+`font-size`), no flex-wrap / margin: auto / layout transitions on
+admin DOM. `tab.select` event-source NOT paired with `blocks.load` on
+the same render fn — multi-source-into-same-output was the wiring shape
+that re-tickled the cycle on first deploy.
+
+## Repositories (`app/repos/`)
+
+| Repo | Methods | Used by |
+|---|---|---|
+| `CaseRepository` (Csv / InMemory) | `list_owned_by`, `get_case`, `case_belongs_to`, `submit_case`, **`list_all`** (Brief #4) | surgeon scope + admin Global Dashboard |
+| `RawSegmentRepository` (Filesystem / InMemory) | `list_raw_segments` | intake Section 1 |
+| `PicklistRepository` (Sqlite / InMemory) | `list_active` | intake dropdowns, metadata validation |
+| `PipelineStateRepository` (Csv / InMemory) | `list_for_case_ids`, `get_state`, **`list_all`** + **`case_id_for_source_file`** (Brief #4) | My Cases + admin Global Dashboard |
+| `AttentionItemsRepository` (Sqlite / InMemory) | `has_attention_for_case_ids`, `list_for_user`, **`list_all`** (Brief #4), `resolve`, `dismiss`, **`admin_resolve`** + **`admin_dismiss`** (Brief #4), `upsert_by_case_and_type` (Brief #3.5b), `count_actions_today` | Action Required tab + cross-silo admin AR |
+| `CaseManifestRepository` (Csv / InMemory) | `for_case_id` | typed manifest reads |
+
+`list_all` is unscoped by design — no role check inside the repo. Auth
+boundary lives at the `/admin` mount's role guard.
+`case_id_for_source_file` raises `MultipleClaimsError` (in
+`app/exceptions.py`) if a segment is claimed by more than one case —
+surfaces pipeline state corruption rather than silently picking one.
 
 ## Project Structure
 ```
@@ -203,16 +277,22 @@ surgical-cv/
 │       ├── _shared.py     # F-033: format_cli_error helper
 │       └── (concat, deid, verify, status, metadata)
 ├── app/                   # FastAPI + Gradio surgeon/admin app + Q3 worker
+│   ├── main.py            # FastAPI app; mounts surgeon + admin Gradio apps; /login + /logout
 │   ├── auth.py            # DSM auth + signed cookie (Fernet-wrapped partial-auth per F-008)
-│   ├── phi.py             # Intake-time PHI scanner (delegates to pipeline/phi_patterns)
-│   ├── repos/             # Case / Segment / Picklist repositories
+│   ├── surgeon_app.py     # Surgeon Gradio Blocks (Intake / My Cases / Action Required)
+│   ├── admin_app.py       # Admin Gradio Blocks (Global Dashboard / Action Required) — Brief #4
+│   ├── attention_actions.py # Type → action / display map (incl. malformed_marker display)
+│   ├── scopes.py          # UserScope / SurgeonScope / AdminScope
+│   ├── exceptions.py      # ScopeViolationError, MultipleClaimsError (Brief #4)
+│   ├── phi.py             # Intake-time PHI scanner + format_phi_details (Brief #3.5b)
+│   ├── repos/             # Case / Segment / Picklist / PipelineState / Attention / Manifest
 │   ├── intake/            # Surgeon intake validation + submit handler
-│   ├── worker/            # Q3 decoupled worker (lockfile/scan/dispatch/failures/main)
-│   └── db/                # SQLite app.db (gitignored) + admin CLI + init_db (umask per F-021)
-├── tests/                 # 826 tests covering all of the above
+│   ├── worker/            # Q3 decoupled worker (lockfile/scan/dispatch/phi_scan/failures/main)
+│   └── db/                # SQLite app.db (gitignored) + admin CLI + init_db + migrate_brief_4
+├── tests/                 # 1090 tests covering all of the above (post Brief #4)
 ├── deploy/systemd/        # Worker systemd unit + timer templates
 ├── bench/                 # model benchmark harness (pre-existing)
-├── scripts/               # Throwaway scripts (gitignored)
+├── scripts/               # gitignored — local-only operator scripts (migrate_manifest_spec_j etc.)
 ├── configs/               # Experiment configs (YAML) — placeholder
 ├── notebooks/             # Exploratory analysis — placeholder
 └── data/                  # gitignored — local caches, extracted frames
