@@ -47,8 +47,12 @@ def test_root_redirects_admin_to_admin(client, monkeypatch):
 
 
 def test_app_prefix_requires_authentication(client):
-    r = client.get("/app/")
-    assert r.status_code == 401
+    """Unauthenticated browser visit redirects to /login?next=/app/
+    rather than returning a JSON 401. The next= param round-trips so the
+    user lands back on /app/ after a successful login."""
+    r = client.get("/app/", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/login?next=%2Fapp%2F"
 
 
 def test_surgeon_can_access_app_prefix(client, monkeypatch):
@@ -82,8 +86,11 @@ def test_admin_to_app_logs_violation(client, monkeypatch, app_env):
 
 
 def test_admin_prefix_requires_authentication(client):
-    r = client.get("/admin/")
-    assert r.status_code == 401
+    """Same as the surgeon-prefix counterpart — admin mount also redirects
+    rather than returning 401 on cold browser visits."""
+    r = client.get("/admin/", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/login?next=%2Fadmin%2F"
 
 
 def test_admin_can_access_admin_prefix(client, monkeypatch):
@@ -141,7 +148,11 @@ def test_unauth_request_does_not_log_violation(client, app_env):
 
 
 def test_protected_route_after_session_expiry(client, monkeypatch):
+    """An expired session at a protected route triggers the same login
+    redirect as a missing session — the user is bounced back to /login
+    with ``?next=`` carrying the original path."""
     _login_as(client, monkeypatch, "asarin")
     monkeypatch.setattr("app.auth.SESSION_MAX_AGE_S", -1)
-    r = client.get("/app/")
-    assert r.status_code == 401
+    r = client.get("/app/", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/login?next=%2Fapp%2F"

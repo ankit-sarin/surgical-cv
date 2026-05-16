@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 from base64 import urlsafe_b64encode
@@ -62,6 +63,9 @@ from fastapi import Cookie, Depends, HTTPException, Request
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from app.db.connection import connect
+
+
+_log = logging.getLogger(__name__)
 
 # ----- constants -----
 
@@ -87,6 +91,11 @@ DSM_NEEDS_OTP = "needs_otp"
 DSM_INVALID = "invalid_credentials"
 
 DSMResult = Literal["success", "needs_otp", "invalid_credentials"]
+
+# DSM API path appended to NAS_DSM_URL. The env var is the base only
+# (scheme + host + port) — operators only need to remember the host, not
+# the API path. Modern Synology DSM 7 routes auth via /webapi/entry.cgi.
+_DSM_API_PATH = "/webapi/entry.cgi"
 
 
 # ----- signed-token helpers -----
@@ -197,17 +206,32 @@ def decode_partial_auth(token: str | None) -> tuple[str, str] | None:
 # ----- DSM client -----
 
 
+def _dsm_endpoint(base: str) -> str:
+    """Compose the DSM API endpoint URL from the operator-supplied base.
+    Strips any trailing slashes so ``https://10.10.0.2:5001`` and
+    ``https://10.10.0.2:5001/`` produce the same target."""
+    return base.rstrip("/") + _DSM_API_PATH
+
+
 def authenticate_dsm(
     username: str, password: str, otp_code: str | None = None
 ) -> DSMResult:
-    """Call DSM WebAPI and reduce to one of the three locked return shapes."""
+    """Call DSM WebAPI and reduce to one of the three locked return shapes.
+
+    Failure paths emit narrow, sanitized WARNING logs (HTTP error type +
+    status code, JSON-parse vs. URL, DSM error.code → mapped result).
+    Logs never include username, password, otp_code, or cookie material —
+    they exist for operational visibility into the failure mode, not for
+    credential capture."""
     if os.environ.get("MOCK_AUTH") == "1":
         return _mock_dsm(username, password, otp_code)
 
-    url = os.environ.get("NAS_DSM_URL")
-    if not url:
+    base = os.environ.get("NAS_DSM_URL")
+    if not base:
         # Misconfigured deployment — fail closed.
+        _log.warning("DSM auth: NAS_DSM_URL not set; failing closed")
         return DSM_INVALID
+    url = _dsm_endpoint(base)
 
     params = {
         "api": "SYNO.API.Auth",
@@ -228,8 +252,19 @@ def authenticate_dsm(
         verify = os.environ.get("DSM_TLS_VERIFY", "0") != "0"
         resp = httpx.post(url, data=params, verify=verify, timeout=10.0)
         resp.raise_for_status()
+    except httpx.HTTPError as e:
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        _log.warning(
+            "DSM auth: %s%s",
+            type(e).__name__,
+            f" status={status}" if status is not None else "",
+        )
+        return DSM_INVALID
+
+    try:
         data = resp.json()
-    except (httpx.HTTPError, ValueError):
+    except ValueError:
+        _log.warning("DSM auth: non-JSON response from %s", url)
         return DSM_INVALID
 
     if data.get("success") is True:
@@ -239,7 +274,9 @@ def authenticate_dsm(
     # DSM 7 error codes: 403 = 2FA required, 404 = 2FA code rejected,
     # 405 = enforce 2FA. Everything else is a generic invalid-credentials.
     if err_code in (403, 405) and otp_code is None:
+        _log.warning("DSM auth: error.code=%s -> NEEDS_OTP", err_code)
         return DSM_NEEDS_OTP
+    _log.warning("DSM auth: error.code=%s -> INVALID", err_code)
     return DSM_INVALID
 
 

@@ -24,8 +24,10 @@ parent's registry — the central handler still catches direct
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 import gradio as gr
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from app.admin_app import build_admin_app
@@ -67,6 +69,7 @@ _LOGIN_FORM_HTML = """<!doctype html>
 <h1>Sign in</h1>
 {error_block}
 <form method="post" action="/login">
+  <input type="hidden" name="next" value="{next_value}">
   <p><label>Username <input name="username" autofocus required></label></p>
   <p><label>Password <input name="password" type="password" required></label></p>
   <p><button type="submit">Sign in</button></p>
@@ -81,25 +84,71 @@ _OTP_FORM_HTML = """<!doctype html>
 {error_block}
 <form method="post" action="/login/otp">
   <input type="hidden" name="partial_auth_token" value="{token}">
+  <input type="hidden" name="next" value="{next_value}">
   <p><label>Code <input name="otp_code" inputmode="numeric" autofocus required></label></p>
   <p><button type="submit">Verify</button></p>
 </form>
 </body></html>
 """
 
+# HTML attribute escaping for the next= round-trip. quote(safe="/") keeps
+# the value URL-safe; html.escape stops a tampered cookie from breaking
+# out of the attribute (defense in depth — _safe_next already rejects
+# anything outside /app/ /admin/, so the attacker would need a
+# pre-validated payload to even reach this template).
+from html import escape as _html_escape
 
-def _render_login(error: str | None = None) -> str:
+
+def _render_login(error: str | None = None, next_value: str = "") -> str:
     block = f"<p style='color:#b00'>{error}</p>" if error else ""
-    return _LOGIN_FORM_HTML.format(error_block=block)
+    return _LOGIN_FORM_HTML.format(
+        error_block=block,
+        next_value=_html_escape(next_value, quote=True),
+    )
 
 
-def _render_otp(token: str, error: str | None = None) -> str:
+def _render_otp(token: str, error: str | None = None, next_value: str = "") -> str:
     block = f"<p style='color:#b00'>{error}</p>" if error else ""
-    return _OTP_FORM_HTML.format(token=token, error_block=block)
+    return _OTP_FORM_HTML.format(
+        token=token,
+        error_block=block,
+        next_value=_html_escape(next_value, quote=True),
+    )
 
 
 _GENERIC_LOGIN_ERROR = "Invalid credentials."
 _GENERIC_FORBIDDEN_BODY = "<h1>Forbidden</h1>"
+
+
+# ----- next= validation (open-redirect defense) -----
+
+
+def _safe_next(next_param: str | None) -> str | None:
+    """Return the ``next`` value iff it's a relative path under /app/ or
+    /admin/. Anything else (absolute URL, scheme-relative ``//``, path
+    outside the Gradio mounts, ``..``-traversal) collapses to ``None`` so
+    the caller falls back to the default redirect target.
+
+    Open-redirect defense: a malicious link like ``/login?next=https://
+    evil.example.com`` must NOT bounce the user off-site after a
+    successful login."""
+    if not next_param:
+        return None
+    if not next_param.startswith("/"):
+        return None
+    if next_param.startswith("//"):
+        # Protocol-relative URL — browsers treat ``//evil.com/x`` as
+        # ``https://evil.com/x``. Reject.
+        return None
+    if "\\" in next_param or "\x00" in next_param:
+        return None
+    # Allow only the two Gradio mount prefixes (and their bare forms).
+    allowed = ("/app/", "/admin/")
+    if next_param in ("/app", "/admin"):
+        return next_param
+    if any(next_param.startswith(p) for p in allowed):
+        return next_param
+    return None
 
 
 # ----- scope_violation_log writer -----
@@ -186,30 +235,40 @@ async def healthz():
 
 
 @app.get("/login", response_class=HTMLResponse)
-async def login_form():
-    return HTMLResponse(_render_login())
+async def login_form(next: str | None = Query(default=None)):
+    safe = _safe_next(next) or ""
+    return HTMLResponse(_render_login(next_value=safe))
 
 
 @app.post("/login")
 async def login_submit(
-    username: str = Form(...), password: str = Form(...)
+    username: str = Form(...),
+    password: str = Form(...),
+    next: str = Form(default=""),
 ) -> Response:
+    safe_next = _safe_next(next)
     result = authenticate_dsm(username, password)
     if result == DSM_NEEDS_OTP:
         token = encode_partial_auth(username, password)
-        return HTMLResponse(_render_otp(token))
+        return HTMLResponse(_render_otp(token, next_value=safe_next or ""))
     if result != DSM_SUCCESS:
         return HTMLResponse(
-            _render_login(error=_GENERIC_LOGIN_ERROR), status_code=401
+            _render_login(
+                error=_GENERIC_LOGIN_ERROR, next_value=safe_next or "",
+            ),
+            status_code=401,
         )
 
     user = lookup_active_user(username)
     if user is None:
         return HTMLResponse(
-            _render_login(error=_GENERIC_LOGIN_ERROR), status_code=401
+            _render_login(
+                error=_GENERIC_LOGIN_ERROR, next_value=safe_next or "",
+            ),
+            status_code=401,
         )
 
-    resp = RedirectResponse("/", status_code=303)
+    resp = RedirectResponse(safe_next or "/", status_code=303)
     set_session_cookie(resp, username)
     return resp
 
@@ -218,27 +277,38 @@ async def login_submit(
 async def login_otp_submit(
     partial_auth_token: str = Form(...),
     otp_code: str = Form(...),
+    next: str = Form(default=""),
 ) -> Response:
+    safe_next = _safe_next(next)
     decoded = decode_partial_auth(partial_auth_token)
     if decoded is None:
         return HTMLResponse(
-            _render_login(error=_GENERIC_LOGIN_ERROR), status_code=401
+            _render_login(
+                error=_GENERIC_LOGIN_ERROR, next_value=safe_next or "",
+            ),
+            status_code=401,
         )
     username, password = decoded
 
     result = authenticate_dsm(username, password, otp_code=otp_code)
     if result != DSM_SUCCESS:
         return HTMLResponse(
-            _render_login(error=_GENERIC_LOGIN_ERROR), status_code=401
+            _render_login(
+                error=_GENERIC_LOGIN_ERROR, next_value=safe_next or "",
+            ),
+            status_code=401,
         )
 
     user = lookup_active_user(username)
     if user is None:
         return HTMLResponse(
-            _render_login(error=_GENERIC_LOGIN_ERROR), status_code=401
+            _render_login(
+                error=_GENERIC_LOGIN_ERROR, next_value=safe_next or "",
+            ),
+            status_code=401,
         )
 
-    resp = RedirectResponse("/", status_code=303)
+    resp = RedirectResponse(safe_next or "/", status_code=303)
     set_session_cookie(resp, username)
     return resp
 
@@ -261,25 +331,42 @@ async def root(user: dict | None = Depends(current_user)) -> Response:
 # ----- Gradio mounts (role-enforced via auth_dependency) -----
 
 
+def _login_redirect_for(request: Request) -> HTTPException:
+    """Build a 303 redirect to ``/login?next=<original-path>`` for an
+    unauthenticated browser hit on a Gradio mount. Raised as an
+    HTTPException so it propagates through the same path Gradio's
+    auth_dependency uses for 401/403; FastAPI's default exception handler
+    honors the Location header on the response."""
+    target_path = request.url.path
+    next_param = quote(target_path, safe="")
+    return HTTPException(
+        status_code=303,
+        detail="login required",
+        headers={"Location": f"/login?next={next_param}"},
+    )
+
+
 def _gradio_auth_dep(expected_role: str):
     """Return a callable suitable for ``mount_gradio_app(auth_dependency=...)``.
 
     On success returns the username (Gradio stashes it on request state). On
-    missing / invalid / inactive session: raises 401. On role mismatch: writes
-    one ``scope_violation_log`` row inline and raises 403. Inline logging
-    rather than via the central ``ScopeViolationError`` handler because the
-    Gradio mount is a sub-app whose exception-handler registry is independent
-    of the parent app's.
+    missing / invalid / inactive session: raises HTTPException(303) with a
+    Location header pointing at ``/login?next=<original-path>`` so a cold
+    browser visit lands on the login form rather than a JSON 401 the user
+    can't act on. On role mismatch: writes one ``scope_violation_log`` row
+    inline and raises 403. Inline logging rather than via the central
+    ``ScopeViolationError`` handler because the Gradio mount is a sub-app
+    whose exception-handler registry is independent of the parent app's.
     """
 
     def dep(request: Request) -> str:
         cookie = request.cookies.get(SESSION_COOKIE_NAME)
         username = decode_session(cookie)
         if not username:
-            raise HTTPException(status_code=401, detail="authentication required")
+            raise _login_redirect_for(request)
         user = lookup_active_user(username)
         if user is None:
-            raise HTTPException(status_code=401, detail="authentication required")
+            raise _login_redirect_for(request)
         if user["role"] != expected_role:
             _log_violation(
                 username=username,

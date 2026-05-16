@@ -616,3 +616,234 @@ def test_dsm_tls_verify_enabled_when_env_set(monkeypatch):
     monkeypatch.setattr("app.auth.httpx.post", capturing_post)
     authenticate_dsm("asarin", "x")
     assert captured["verify"] is True
+
+
+# ----- DSM URL construction (NAS_DSM_URL is the base; /webapi/entry.cgi
+# is appended internally so operators only set scheme + host + port) -----
+
+
+@pytest.mark.parametrize("base", [
+    "https://10.10.0.2:5001",
+    "https://10.10.0.2:5001/",
+    "https://10.10.0.2:5001///",
+    "https://dsm.test.invalid:5001",
+])
+def test_dsm_url_appends_webapi_entry_cgi(monkeypatch, base):
+    """Regardless of trailing slashes on NAS_DSM_URL, the URL passed to
+    httpx.post ends with /webapi/entry.cgi exactly once."""
+    from app.auth import authenticate_dsm
+
+    monkeypatch.setenv("NAS_DSM_URL", base)
+    monkeypatch.delenv("MOCK_AUTH", raising=False)
+    captured: dict = {}
+
+    def capturing_post(url, data=None, **kw):
+        captured["url"] = url
+        return httpx.Response(
+            200, json={"success": True},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr("app.auth.httpx.post", capturing_post)
+    authenticate_dsm("asarin", "x")
+    assert captured["url"].endswith("/webapi/entry.cgi")
+    # Exactly one occurrence — no double-suffix bug.
+    assert captured["url"].count("/webapi/entry.cgi") == 1
+    # No trailing-slash leak between base and path.
+    assert "//webapi" not in captured["url"]
+
+
+def test_dsm_url_missing_env_logs_and_fails_closed(monkeypatch, caplog):
+    from app.auth import DSM_INVALID, authenticate_dsm
+
+    monkeypatch.delenv("NAS_DSM_URL", raising=False)
+    monkeypatch.delenv("MOCK_AUTH", raising=False)
+    with caplog.at_level("WARNING", logger="app.auth"):
+        assert authenticate_dsm("asarin", "x") == DSM_INVALID
+    assert any("NAS_DSM_URL not set" in r.message for r in caplog.records)
+
+
+# ----- Sanitized DSM failure logging -----
+
+
+def test_dsm_http_error_logs_exception_type_no_credentials(
+    monkeypatch, caplog
+):
+    """HTTPError path emits a WARNING with the exception type but never
+    the username, password, or otp_code."""
+    from app.auth import DSM_INVALID, authenticate_dsm
+
+    monkeypatch.setenv("NAS_DSM_URL", "https://dsm.test.invalid:5001")
+    monkeypatch.delenv("MOCK_AUTH", raising=False)
+
+    def boom(url, **kw):
+        raise httpx.ConnectError("network down")
+
+    monkeypatch.setattr("app.auth.httpx.post", boom)
+    with caplog.at_level("WARNING", logger="app.auth"):
+        assert authenticate_dsm("asarin", "secret-pwd") == DSM_INVALID
+    msgs = [r.message for r in caplog.records]
+    joined = "\n".join(msgs)
+    assert "ConnectError" in joined
+    assert "secret-pwd" not in joined
+    assert "asarin" not in joined
+
+
+def test_dsm_non_json_response_maps_to_invalid_and_logs(
+    monkeypatch, caplog
+):
+    """200 response whose body is not JSON (e.g. an HTML 404 page from a
+    misrouted reverse proxy) must collapse to DSM_INVALID and emit a
+    "non-JSON response" log line. Regression guard for the bug that
+    motivated this spec — the deployed app was hitting an HTML response
+    from the wrong URL path."""
+    from app.auth import DSM_INVALID, authenticate_dsm
+
+    monkeypatch.setenv("NAS_DSM_URL", "https://dsm.test.invalid:5001")
+    monkeypatch.delenv("MOCK_AUTH", raising=False)
+
+    def html_response(url, **kw):
+        return httpx.Response(
+            200, text="not found",
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr("app.auth.httpx.post", html_response)
+    with caplog.at_level("WARNING", logger="app.auth"):
+        assert authenticate_dsm("asarin", "x") == DSM_INVALID
+    assert any("non-JSON response" in r.message for r in caplog.records)
+
+
+def test_dsm_error_code_403_maps_to_needs_otp_and_logs(
+    monkeypatch, caplog
+):
+    """Existing behavior the new logging line must not regress: DSM
+    error.code=403 (2FA required) maps to NEEDS_OTP and logs the mapping."""
+    from app.auth import DSM_NEEDS_OTP, authenticate_dsm
+
+    monkeypatch.setenv("NAS_DSM_URL", "https://dsm.test.invalid:5001")
+    monkeypatch.delenv("MOCK_AUTH", raising=False)
+
+    def err_403(url, **kw):
+        return httpx.Response(
+            200, json={"success": False, "error": {"code": 403}},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr("app.auth.httpx.post", err_403)
+    with caplog.at_level("WARNING", logger="app.auth"):
+        assert authenticate_dsm("asarin", "x") == DSM_NEEDS_OTP
+    assert any(
+        "error.code=403 -> NEEDS_OTP" in r.message for r in caplog.records
+    )
+
+
+def test_dsm_error_code_400_maps_to_invalid_and_logs(monkeypatch, caplog):
+    from app.auth import DSM_INVALID, authenticate_dsm
+
+    monkeypatch.setenv("NAS_DSM_URL", "https://dsm.test.invalid:5001")
+    monkeypatch.delenv("MOCK_AUTH", raising=False)
+
+    def err_400(url, **kw):
+        return httpx.Response(
+            200, json={"success": False, "error": {"code": 400}},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr("app.auth.httpx.post", err_400)
+    with caplog.at_level("WARNING", logger="app.auth"):
+        assert authenticate_dsm("asarin", "topsecret") == DSM_INVALID
+    msgs = "\n".join(r.message for r in caplog.records)
+    assert "error.code=400 -> INVALID" in msgs
+    # Belt + suspenders: no credential leak.
+    assert "topsecret" not in msgs
+    assert "asarin" not in msgs
+
+
+# ----- next= round-trip + open-redirect defense -----
+
+
+def test_login_post_honors_safe_next(client, monkeypatch):
+    patch_dsm(monkeypatch, {"success": True})
+    r = client.post(
+        "/login",
+        data={"username": "asarin", "password": "x", "next": "/app/"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/app/"
+    assert "app_session" in r.cookies
+
+
+def test_login_post_strips_unsafe_next(client, monkeypatch):
+    """Open-redirect defense: a tampered ``next`` value pointing off-site
+    must NOT be honored — the login redirect falls back to the default
+    landing path (``/``, which then bounces by role)."""
+    patch_dsm(monkeypatch, {"success": True})
+    r = client.post(
+        "/login",
+        data={
+            "username": "asarin",
+            "password": "x",
+            "next": "https://evil.example.com/",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/"
+
+
+def test_login_get_strips_unsafe_next(client):
+    """The login GET form pre-fills the hidden next field, but only with
+    a sanitized value. ``next=https://evil`` must produce an empty hidden
+    field, not the malicious URL echoed into the markup."""
+    r = client.get("/login?next=https://evil.example.com/")
+    assert r.status_code == 200
+    assert "evil.example.com" not in r.text
+
+
+def test_login_get_honors_safe_next_in_hidden_field(client):
+    r = client.get("/login?next=/app/")
+    assert r.status_code == 200
+    assert 'name="next" value="/app/"' in r.text
+
+
+@pytest.mark.parametrize("bad_next", [
+    "//evil.example.com/x",
+    "https://evil.example.com",
+    "/etc/passwd",
+    "/foo/../app/",
+    "",
+    "javascript:alert(1)",
+])
+def test_login_post_unsafe_next_falls_back_to_root(
+    client, monkeypatch, bad_next
+):
+    patch_dsm(monkeypatch, {"success": True})
+    r = client.post(
+        "/login",
+        data={"username": "asarin", "password": "x", "next": bad_next},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/"
+
+
+def test_safe_next_helper_unit():
+    from app.main import _safe_next
+
+    # Allowed
+    assert _safe_next("/app/") == "/app/"
+    assert _safe_next("/admin/") == "/admin/"
+    assert _safe_next("/app/queue?x=1") == "/app/queue?x=1"
+    # Bare paths without trailing slash also accepted
+    assert _safe_next("/app") == "/app"
+    assert _safe_next("/admin") == "/admin"
+    # Rejected
+    assert _safe_next(None) is None
+    assert _safe_next("") is None
+    assert _safe_next("https://evil.example.com/") is None
+    assert _safe_next("//evil.example.com/x") is None
+    assert _safe_next("/etc/passwd") is None
+    assert _safe_next("javascript:alert(1)") is None
+    assert _safe_next("/app/\\backslash") is None

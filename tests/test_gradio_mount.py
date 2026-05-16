@@ -57,9 +57,15 @@ def test_admin_at_app_blocked_before_reaching_gradio(
     assert rows[0]["username"] == "ankitsarin"
 
 
-def test_unauth_at_app_returns_401(client):
-    r = client.get("/app/")
-    assert r.status_code == 401
+def test_unauth_at_app_redirects_to_login_with_next(client):
+    """Cold browser visit to /app/ without a session redirects to the
+    login form, carrying the original path in ``?next=`` so the post-
+    login bounce lands the surgeon back where they were heading.
+    Regression guard: prior behavior was a JSON 401 the user couldn't
+    act on."""
+    r = client.get("/app/", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/login?next=%2Fapp%2F"
 
 
 # ----- mount: admin /admin/ -----
@@ -85,9 +91,12 @@ def test_surgeon_at_admin_blocked_before_reaching_gradio(
     assert rows[0]["scope_at_time"] == "surgeon:sarin"
 
 
-def test_unauth_at_admin_returns_401(client):
-    r = client.get("/admin/")
-    assert r.status_code == 401
+def test_unauth_at_admin_redirects_to_login_with_next(client):
+    """Same as the surgeon-mount counterpart — admin mount also redirects
+    rather than returning 401 on cold browser visits."""
+    r = client.get("/admin/", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/login?next=%2Fadmin%2F"
 
 
 # ----- identity helper -----

@@ -12,7 +12,10 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TEST_SECRET = "test-secret-32-bytes-or-longer-please-thank-you"
-TEST_DSM_URL = "https://dsm.test.invalid/webapi/auth.cgi"
+# NAS_DSM_URL is the operator-facing knob for the DSM base (scheme + host
+# + port only). The /webapi/entry.cgi suffix is appended internally — see
+# app.auth._dsm_endpoint.
+TEST_DSM_URL = "https://dsm.test.invalid:5001"
 SEED_TS = "2026-05-15T00:00:00+00:00"
 
 _CASE_MANIFEST_HEADER = (
