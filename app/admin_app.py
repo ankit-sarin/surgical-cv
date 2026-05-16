@@ -153,43 +153,35 @@ def _list_surgeon_users() -> list[dict]:
 # ===== Global Dashboard tab =====
 
 
+# Brief #3.1 lesson learned: custom CSS rules on layout-affecting
+# properties (flex-wrap, margin: auto, transitions) can trigger
+# Svelte 5's effect_update_depth_exceeded cycle when Gradio's
+# reactive flush meets the browser's resize observer. We use a CSS
+# grid with fixed columns (no wrap decision) + inline styles instead
+# of a separate stylesheet to sidestep that whole class of issues.
 _STAT_STRIP_TEMPLATE = """
-<div class="ds-stat-strip" role="group" aria-label="System totals">
-  <div class="ds-stat"><div class="ds-stat-value">{total_cases}</div><div class="ds-stat-label">Total cases</div></div>
-  <div class="ds-stat"><div class="ds-stat-value">{intake_cases}</div><div class="ds-stat-label">In intake</div></div>
-  <div class="ds-stat"><div class="ds-stat-value">{open_ar}</div><div class="ds-stat-label">Open AR items</div></div>
-  <div class="ds-stat"><div class="ds-stat-value">{high_ar}</div><div class="ds-stat-label">High-severity AR</div></div>
-  <div class="ds-stat"><div class="ds-stat-value">{stale_cases}</div><div class="ds-stat-label">Stale (&gt; 7d)</div></div>
+<div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin: 12px 0 18px 0;">
+  <div style="padding: 14px 18px; background: #ffffff; border: 1px solid rgba(10, 94, 86, 0.18); border-radius: 10px; text-align: center;">
+    <div style="font-size: 28px; font-weight: 600; color: #0A5E56; line-height: 1.15;">{total_cases}</div>
+    <div style="font-size: 12px; color: #2C2C2C; margin-top: 4px; letter-spacing: 0.02em; text-transform: uppercase;">Total cases</div>
+  </div>
+  <div style="padding: 14px 18px; background: #ffffff; border: 1px solid rgba(10, 94, 86, 0.18); border-radius: 10px; text-align: center;">
+    <div style="font-size: 28px; font-weight: 600; color: #0A5E56; line-height: 1.15;">{intake_cases}</div>
+    <div style="font-size: 12px; color: #2C2C2C; margin-top: 4px; letter-spacing: 0.02em; text-transform: uppercase;">In intake</div>
+  </div>
+  <div style="padding: 14px 18px; background: #ffffff; border: 1px solid rgba(10, 94, 86, 0.18); border-radius: 10px; text-align: center;">
+    <div style="font-size: 28px; font-weight: 600; color: #0A5E56; line-height: 1.15;">{open_ar}</div>
+    <div style="font-size: 12px; color: #2C2C2C; margin-top: 4px; letter-spacing: 0.02em; text-transform: uppercase;">Open AR items</div>
+  </div>
+  <div style="padding: 14px 18px; background: #ffffff; border: 1px solid rgba(10, 94, 86, 0.18); border-radius: 10px; text-align: center;">
+    <div style="font-size: 28px; font-weight: 600; color: #0A5E56; line-height: 1.15;">{high_ar}</div>
+    <div style="font-size: 12px; color: #2C2C2C; margin-top: 4px; letter-spacing: 0.02em; text-transform: uppercase;">High-severity AR</div>
+  </div>
+  <div style="padding: 14px 18px; background: #ffffff; border: 1px solid rgba(10, 94, 86, 0.18); border-radius: 10px; text-align: center;">
+    <div style="font-size: 28px; font-weight: 600; color: #0A5E56; line-height: 1.15;">{stale_cases}</div>
+    <div style="font-size: 12px; color: #2C2C2C; margin-top: 4px; letter-spacing: 0.02em; text-transform: uppercase;">Stale (&gt; 7d)</div>
+  </div>
 </div>
-"""
-
-
-_STAT_STRIP_CSS = """
-.ds-stat-strip {
-    display: flex; gap: 14px; flex-wrap: wrap;
-    margin: 12px 0 18px 0;
-}
-.ds-stat {
-    flex: 1 1 140px; min-width: 140px;
-    padding: 14px 18px;
-    background: #ffffff;
-    border: 1px solid rgba(10, 94, 86, 0.18);
-    border-radius: 10px;
-    text-align: center;
-}
-.ds-stat-value {
-    font-family: 'Fraunces', Georgia, serif;
-    font-size: 28px; font-weight: 600;
-    color: #0A5E56;
-    line-height: 1.15;
-}
-.ds-stat-label {
-    font-size: 12px;
-    color: #2C2C2C;
-    margin-top: 4px;
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
-}
 """
 
 
@@ -432,20 +424,22 @@ def _detail_html(row: _ARRow) -> str:
     study code, surgeon_label is a folder_slug, details was emitted
     through the worker's category-only formatter (Brief #3.5b)."""
     age = "1 day" if row.age_days == 1 else f"{row.age_days} days"
-    return f"""
-<div class="ds-ar-detail">
-  <p><strong>{row.type_label}</strong> for case
-     <code>{row.case_id or '—'}</code>
-     (surgeon: <code>{row.surgeon_label}</code>,
-     age: {age}, severity: {row.severity or '—'}).</p>
-  <p class="ds-ar-detail-body">{row.details_full}</p>
-</div>
-"""
+    return (
+        '<div style="background: #ffffff; '
+        'border: 1px solid rgba(10, 94, 86, 0.18); '
+        'border-radius: 10px; padding: 14px 18px; margin-top: 12px;">'
+        f"<p><strong>{row.type_label}</strong> for case "
+        f"<code>{row.case_id or '—'}</code> "
+        f"(surgeon: <code>{row.surgeon_label}</code>, "
+        f"age: {age}, severity: {row.severity or '—'}).</p>"
+        f'<p style="margin-top: 8px; color: #2C2C2C;">{row.details_full}</p>'
+        "</div>"
+    )
 
 
 def _empty_detail_html() -> str:
     return (
-        '<p class="ds-ar-empty-detail">'
+        '<p style="color: #6c6c6c; font-style: italic; padding: 12px 0;">'
         'Select a row above to see details and take action.</p>'
     )
 
@@ -628,27 +622,14 @@ def _admin_resolve_handler(
 # ===== top-level Blocks build =====
 
 
-# Gradio 6 moved ``css=`` from ``gr.Blocks()`` to ``mount_gradio_app()``.
-# Surface as a module attribute so ``app.main`` can wire it through —
-# matches the ``SURGEON_CSS`` pattern.
-ADMIN_CSS = _STAT_STRIP_CSS + """
-.ds-ar-detail {
-    background: #ffffff;
-    border: 1px solid rgba(10, 94, 86, 0.18);
-    border-radius: 10px;
-    padding: 14px 18px;
-    margin-top: 12px;
-}
-.ds-ar-detail-body {
-    margin-top: 8px;
-    color: #2C2C2C;
-}
-.ds-ar-empty-detail {
-    color: #6c6c6c;
-    font-style: italic;
-    padding: 12px 0;
-}
-"""
+# Brief #3.1 / Brief #4 followup: no module-level CSS export. All
+# styling lives inline in the rendered HTML chunks above. The
+# previous ADMIN_CSS stylesheet — and ``css=`` on the mount — were
+# stripped after the admin tabs hung on cv.digitalsurgeon.dev with
+# the same Svelte ``effect_update_depth_exceeded`` cycle Brief
+# #3.1 chased through My Cases. Inline styles sidestep the entire
+# class of reactive-flush-meets-resize-observer problems.
+ADMIN_CSS = ""
 
 
 def build_admin_app() -> gr.Blocks:
@@ -752,16 +733,17 @@ def build_admin_app() -> gr.Blocks:
             outputs=[ar_df, cached_rows_state, detail_panel],
         )
 
-        # Tab activation: refresh that tab's data so a stale view doesn't
-        # linger after work done in the other tab.
-        dashboard_tab.select(
-            render_dashboard, None, [stat_strip, surgeon_df],
-        )
-        ar_tab.select(
-            render_ar,
-            inputs=[type_filter, surgeon_filter, severity_filter, age_filter],
-            outputs=[ar_df, cached_rows_state, detail_panel],
-        )
+        # Brief #4 followup: ``gr.Tab.select`` wiring removed. Pairing
+        # ``tab.select`` with ``blocks.load`` on the same render
+        # functions was the most plausible remaining suspect after the
+        # custom CSS strip — multiple-event-source-into-same-output
+        # is the wiring shape that historically tickles Svelte's
+        # effect_update_depth in this codebase. ``blocks.load`` runs
+        # both renders on initial mount; subsequent admin actions
+        # (dismiss / resolve) refresh the AR table via their own
+        # click handlers. The Dashboard tab stays at whatever values
+        # were computed at page open until the user reloads — fine
+        # for the admin's read-only summary use case.
 
         # Filter changes: re-run render_ar (every filter wires here).
         for component in (
