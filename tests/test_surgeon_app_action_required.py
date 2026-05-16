@@ -29,19 +29,24 @@ from app.repos.attention import (
 _SEED_TS = "2026-05-15T08:00:00+00:00"
 
 
-# Brief #3.1.1 — AR render shape changed:
+# Brief #3.1.4 — AR render shape is now a 3-tuple:
 #   [0]  counter_md value
 #   [1]  empty_html update
-#   [2]  visible_attention_state value (list[dict])
-#   per slot i, 3 outputs starting at 3 + i*3:
-#     group_update, html_value, button_update
-_AR_LEADING = 3
-_AR_PER_SLOT = 3
+#   [2]  visible_attention_state value (list[dict]) — each entry:
+#         {"item_id", "action", "html", "btn_label", "btn_visible"}
+# Cards mount dynamically via @gr.render. No per-slot components in
+# the output.
+_AR_COUNTER_IDX = 0
+_AR_EMPTY_IDX = 1
+_AR_PAYLOAD_IDX = 2
 
 
-def _ar_slot(out, i):
-    base = _AR_LEADING + i * _AR_PER_SLOT
-    return out[base: base + _AR_PER_SLOT]
+def _ar_entry_for(out, item_id):
+    """Return the payload entry for ``item_id``, or None."""
+    for entry in out[_AR_PAYLOAD_IDX] or []:
+        if entry.get("item_id") == item_id:
+            return entry
+    return None
 
 
 def _fake_request_for(username: str) -> types.SimpleNamespace:
@@ -103,12 +108,11 @@ def test_action_required_tab_present_in_surgeon_blocks():
     assert "Action Required" in labels
 
 
-def test_action_required_allocates_max_card_slots():
-    """Pre-allocated card pool — the brief uses 10 as the comfortable
-    upper bound."""
-    from app.surgeon_app import _MAX_VISIBLE_ACTION_CARDS, build_surgeon_app
+def test_action_required_has_no_pre_allocated_slot_pool():
+    """Brief #3.1.4: cards mount dynamically via @gr.render. The
+    pre-allocated 10-slot pool is gone."""
+    from app.surgeon_app import build_surgeon_app
 
-    assert _MAX_VISIBLE_ACTION_CARDS == 10
     blocks = build_surgeon_app()
     import gradio as gr
     slot_groups = [
@@ -116,20 +120,34 @@ def test_action_required_allocates_max_card_slots():
         if isinstance(c, gr.Group)
         and (getattr(c, "elem_id", None) or "").startswith("ar-card-slot-")
     ]
-    assert len(slot_groups) == _MAX_VISIBLE_ACTION_CARDS
-
-
-def test_action_required_carries_per_slot_action_button():
-    from app.surgeon_app import _MAX_VISIBLE_ACTION_CARDS, build_surgeon_app
-
-    blocks = build_surgeon_app()
-    import gradio as gr
+    assert slot_groups == []
     btns = [
         c for c in blocks.blocks.values()
         if isinstance(c, gr.Button)
         and (getattr(c, "elem_id", None) or "").startswith("ar-card-btn-")
     ]
-    assert len(btns) == _MAX_VISIBLE_ACTION_CARDS
+    assert btns == []
+
+
+def test_action_required_has_dynamic_card_container():
+    """The static parent that scopes the @gr.render block."""
+    from app.surgeon_app import build_surgeon_app
+
+    blocks = build_surgeon_app()
+    import gradio as gr
+    groups = [
+        c for c in blocks.blocks.values()
+        if isinstance(c, gr.Group)
+        and getattr(c, "elem_id", None) == "ar-cards"
+    ]
+    assert len(groups) == 1
+
+
+def test_action_required_max_cards_constant_is_soft_cap():
+    """_MAX_VISIBLE_ACTION_CARDS is the per-page payload cap."""
+    from app.surgeon_app import _MAX_VISIBLE_ACTION_CARDS
+
+    assert _MAX_VISIBLE_ACTION_CARDS == 10
 
 
 def test_action_required_no_per_slot_id_states():
@@ -191,20 +209,14 @@ def test_action_required_has_counter_and_empty_components():
 
 
 def test_render_empty_state_for_user_with_no_items(app_env):
-    """anoren has zero attention items → empty-state HTML visible, all
-    card slots hidden."""
-    from app.surgeon_app import (
-        _MAX_VISIBLE_ACTION_CARDS, render_action_required,
-    )
+    """anoren has zero attention items → empty-state HTML visible,
+    payload empty."""
+    from app.surgeon_app import render_action_required
+
     out = render_action_required(_fake_request_for("anoren"))
-    counter, empty_update = out[0], out[1]
-    assert counter == "0 items · 0 resolved today · 0 pending"
-    assert empty_update["visible"] is True
-    # Walk the per-slot tuples (3 outputs each): all groups hidden.
-    for i in range(_MAX_VISIBLE_ACTION_CARDS):
-        slot = _ar_slot(out, i)
-        group_update = slot[0]
-        assert group_update["visible"] is False
+    assert out[_AR_COUNTER_IDX] == "0 items · 0 resolved today · 0 pending"
+    assert out[_AR_EMPTY_IDX]["visible"] is True
+    assert out[_AR_PAYLOAD_IDX] == []
 
 
 def test_render_unauth_returns_empty_outputs(app_env):
@@ -212,13 +224,14 @@ def test_render_unauth_returns_empty_outputs(app_env):
     auth_dep gates /app/."""
     from app.surgeon_app import render_action_required
     out = render_action_required(types.SimpleNamespace(cookies={}))
-    empty_update = out[1]
-    assert empty_update["visible"] is True
+    assert out[_AR_EMPTY_IDX]["visible"] is True
+    assert out[_AR_PAYLOAD_IDX] == []
 
 
 def test_render_renders_one_card_per_open_item(app_env):
     """Seed three items of three different types; render_action_required
-    surfaces all three with the correct labels and action buttons."""
+    surfaces all three in the payload with the correct labels +
+    dispatch actions."""
     from app.surgeon_app import render_action_required
 
     _seed_attention(
@@ -235,37 +248,22 @@ def test_render_renders_one_card_per_open_item(app_env):
     )
 
     out = render_action_required(_fake_request_for("asarin"))
-    counter = out[0]
-    assert "3 items" in counter
-    assert "3 pending" in counter
+    assert "3 items" in out[_AR_COUNTER_IDX]
+    assert "3 pending" in out[_AR_COUNTER_IDX]
 
-    # Inspect the first three slot tuples + the shared
-    # visible_attention_state list (Brief #3.1.1 surface).
-    visible_attention = out[2]
-    assert len(visible_attention) == 3
-    visible = []
-    for i in range(3):
-        slot = _ar_slot(out, i)
-        group_update, html_value, btn_update = slot
-        if group_update.get("visible"):
-            visible.append((html_value, btn_update, visible_attention[i]))
-    assert len(visible) == 3
-
-    # Type labels render in the cards.
-    htmls = " ".join(v[0] for v in visible)
+    payload = out[_AR_PAYLOAD_IDX]
+    assert len(payload) == 3
+    htmls = " ".join(entry["html"] for entry in payload)
     assert "Quality flag" in htmls
     assert "Processing failed" in htmls
     assert "Incomplete submission" in htmls
 
-    # Buttons label per dispatch map: dismiss for verify_soft_fail,
-    # resolve for pipeline_failure and orphan_marker.
-    actions = sorted(v[2]["action"] for v in visible)
+    actions = sorted(entry["action"] for entry in payload)
     assert actions == ["dismiss", "resolve", "resolve"]
 
 
 def test_render_filters_to_owned_items_only(app_env):
-    """asarin sees only her items; anoren's items must NOT appear in
-    her render. Cross-surgeon scope guard at the render layer."""
+    """asarin sees only her items; anoren's items must NOT appear."""
     from app.surgeon_app import render_action_required
 
     _seed_attention(
@@ -278,17 +276,15 @@ def test_render_filters_to_owned_items_only(app_env):
     )
 
     out = render_action_required(_fake_request_for("asarin"))
-    counter = out[0]
-    assert "1 items" in counter
-    htmls = " ".join(_ar_slot(out, i)[1] or "" for i in range(10))
+    assert "1 items" in out[_AR_COUNTER_IDX]
+    htmls = " ".join(entry["html"] for entry in out[_AR_PAYLOAD_IDX])
     assert "mine" in htmls
     assert "not mine" not in htmls
 
 
 def test_render_card_severity_maps_to_brand_class(app_env):
     """High-severity items get the .ds-card-severity-high stripe and
-    .ds-badge-high pill; normal-severity items get the matching
-    -normal classes."""
+    .ds-badge-high pill in the card HTML."""
     from app.surgeon_app import render_action_required
 
     _seed_attention(
@@ -296,15 +292,14 @@ def test_render_card_severity_maps_to_brand_class(app_env):
     )
 
     out = render_action_required(_fake_request_for("asarin"))
-    html_value = _ar_slot(out, 0)[1]
-    assert "ds-card-severity-high" in html_value
-    assert "ds-badge-high" in html_value
+    entry = out[_AR_PAYLOAD_IDX][0]
+    assert "ds-card-severity-high" in entry["html"]
+    assert "ds-badge-high" in entry["html"]
 
 
 def test_render_unknown_type_renders_card_without_action_button(app_env):
-    """Defensive: an unmapped attention_items.type still renders as a
-    card so the surgeon sees that something needs reviewer attention,
-    just without a clickable action."""
+    """Unmapped attention_items.type renders as a read-only card —
+    payload entry has ``btn_visible=False`` and ``action=""``."""
     from app.surgeon_app import render_action_required
 
     _seed_attention(
@@ -312,28 +307,23 @@ def test_render_unknown_type_renders_card_without_action_button(app_env):
     )
 
     out = render_action_required(_fake_request_for("asarin"))
-    slot = _ar_slot(out, 0)
-    group_update, html_value, btn_update = slot
-    assert group_update["visible"] is True
-    assert btn_update["visible"] is False
-    # Generic fallback label from display_for_type.
-    assert "Some Future Type" in html_value
-    # visible_attention_state carries the dispatch mapping; unmapped
-    # type → empty action string.
-    assert out[2][0]["action"] == ""
+    payload = out[_AR_PAYLOAD_IDX]
+    assert len(payload) == 1
+    entry = payload[0]
+    assert entry["btn_visible"] is False
+    assert entry["action"] == ""
+    assert "Some Future Type" in entry["html"]
 
 
 def test_render_html_contains_unescaped_markup(app_env):
-    """Render-level guard: card HTML contains a literal ``<`` for an
-    HTML tag, never the entity-encoded ``&lt;``. Same regression guard
-    pattern Brief #2.5 added for the timeline SVG."""
+    """Card HTML contains a literal ``<article``, not entity-encoded."""
     from app.surgeon_app import render_action_required
 
     _seed_attention(app_env, item_type="verify_soft_fail")
     out = render_action_required(_fake_request_for("asarin"))
-    html_value = _ar_slot(out, 0)[1]
-    assert "<article" in html_value
-    assert "&lt;article" not in html_value
+    html = out[_AR_PAYLOAD_IDX][0]["html"]
+    assert "<article" in html
+    assert "&lt;article" not in html
 
 
 def test_render_counter_increments_resolved_today_after_dismiss(app_env):
