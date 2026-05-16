@@ -1144,22 +1144,40 @@ def _my_case_card_html(
 
 
 # ----- render fn -----
+#
+# Brief #3.1.1 — slot-pool state graph rewritten.
+#
+# The Brief #3.1 implementation wrote a fresh value to a per-slot
+# ``case_id_state`` on every render. With 50 slots, that fanned out to
+# 50 simultaneous state-change events per tick. Svelte 5's reactive
+# flush detected the cascade as ``effect_update_depth_exceeded`` once
+# the My Cases tab mounted (the AR tab at 10 slots stayed under the
+# threshold — same defect, smaller blast radius).
+#
+# Fix is structural: no per-slot identity states. A single shared
+# ``visible_cases_state`` list carries the slot→case-id mapping; each
+# slot's click handler closure-captures its slot index and reads the
+# shared list at click time. Render writes (a) the shared list and
+# (b) the per-slot component values (group visibility, html). Render
+# does NOT write back to ``expanded_case_id_state`` — that state
+# changes only via the click handler, and its ``.change`` event is the
+# single trigger that re-runs render after a click. The cycle is
+# broken structurally, not via a configuration toggle.
 
 
 def _empty_my_cases_outputs(now: datetime) -> tuple:
     """Output tuple for unauthenticated / no-cases renders. Header empty,
-    empty-state visible, all slot rows hidden."""
+    empty-state visible, all slot rows hidden, visible_cases empty."""
     outputs: list = [
         "",  # header_md (counter strip)
         gr.update(value=_EMPTY_CASES_MARKDOWN, visible=True),
         format_footer(now),
-        None,  # expanded_case_id state value
+        [],  # visible_cases_state — no cases visible
     ]
     for _ in range(_MAX_VISIBLE_MY_CASES_SLOTS):
         outputs.extend([
             gr.update(visible=False),  # slot group
             "",                          # card html
-            "",                          # case_id state
         ])
     return tuple(outputs)
 
@@ -1173,17 +1191,17 @@ def render_my_cases(
         [0]  header_md value (counter strip)
         [1]  empty_state_md update (visible + value)
         [2]  footer_md value
-        [3]  expanded_case_id state value (str | None)
+        [3]  visible_cases_state value (list[dict] indexed by slot pos)
         then per slot i in [0, _MAX_VISIBLE_MY_CASES_SLOTS):
             slot group visibility update
             card html string
-            case_id state value (str | "")
 
-    ``expanded_case_id`` is passed through unchanged here — the render
-    fn is pure given (state, request). The click handler computes the
-    new expansion target and re-invokes render_my_cases to produce the
-    full output tuple (same pattern as Action Required's
-    ``_ar_action_handler`` calling ``render_action_required``)."""
+    ``expanded_case_id`` is read but never written back. If it points
+    at a case that's no longer in the visible window (concurrently
+    moved out of scope, or the surgeon submitted >50 new cases between
+    renders), render simply doesn't mark any card expanded — the stale
+    state value persists harmlessly until the next click validates it
+    via the visible_cases list."""
     scope = _scope_from_request(request)
     now = _utcnow()
     if scope is None:
@@ -1213,22 +1231,26 @@ def render_my_cases(
         counts[badge] += 1
         ranked.append((case_id, case, state, badge))
     ranked.sort(key=lambda r: _sort_key(r[0], r[1], r[2]))
+    truncated = ranked[:_MAX_VISIBLE_MY_CASES_SLOTS]
 
-    visible_case_ids = {r[0] for r in ranked[:_MAX_VISIBLE_MY_CASES_SLOTS]}
-    # Race-graceful: if expanded_case_id points at a case that's no
-    # longer in the visible window (concurrently moved out of scope, or
-    # the surgeon submitted >50 new cases between renders), collapse
-    # silently rather than leaving the state stale.
-    if expanded_case_id and expanded_case_id not in visible_case_ids:
-        expanded_case_id = None
+    visible_case_ids = {r[0] for r in truncated}
+    # Local normalization only — we never write back to the state. If
+    # ``expanded_case_id`` is stale, the next click handler invocation
+    # will resolve via the visible_cases list and overwrite cleanly.
+    effective_expanded = (
+        expanded_case_id if expanded_case_id in visible_case_ids else None
+    )
+
+    visible_cases_payload: list[dict] = [
+        {"case_id": r[0]} for r in truncated
+    ]
 
     outputs: list = [
         format_counter_strip(counts),
         gr.update(visible=False),
         format_footer(now),
-        expanded_case_id,
+        visible_cases_payload,
     ]
-    truncated = ranked[:_MAX_VISIBLE_MY_CASES_SLOTS]
     for i in range(_MAX_VISIBLE_MY_CASES_SLOTS):
         if i < len(truncated):
             case_id, case, state, badge = truncated[i]
@@ -1237,37 +1259,50 @@ def render_my_cases(
                 case_id, case, state, badge,
                 manifest=manifest,
                 attention_count=attention_counts.get(case_id, 0),
-                is_expanded=(case_id == expanded_case_id),
+                is_expanded=(case_id == effective_expanded),
             )
             outputs.extend([
                 gr.update(visible=True),
                 html,
-                case_id,
             ])
         else:
             outputs.extend([
                 gr.update(visible=False),
-                "",
                 "",
             ])
     return tuple(outputs)
 
 
 def _my_case_click_handler(
-    current_expanded: str | None,
-    slot_case_id: str,
-    request: gr.Request,
-) -> tuple:
-    """Toggle the per-card expansion. Clicking the currently-expanded
-    card collapses it; clicking another card swaps the expansion;
-    clicking an empty slot is a no-op (shouldn't happen — empty slots
-    are ``visible=False`` and their buttons can't be clicked from the
-    browser — but defensive in case of a stale-tab race where a slot
-    was just emptied between render and click)."""
-    if not slot_case_id:
-        return render_my_cases(current_expanded, request)
-    new_expanded = None if current_expanded == slot_case_id else slot_case_id
-    return render_my_cases(new_expanded, request)
+    slot_index: int,
+    visible_cases: list[dict] | None,
+    expanded_case_id: str | None,
+) -> "str | None | object":
+    """Toggle the per-card expansion. Returns the new
+    ``expanded_case_id`` state value (``str`` to expand / swap, ``None``
+    to collapse) or :func:`gr.skip` to leave the state untouched when
+    the slot is empty.
+
+    Brief #3.1.1: the slot index is closure-captured via
+    :func:`functools.partial` at wiring time so each button's handler
+    knows its own position without per-slot state. The visible_cases
+    list resolves slot→case_id at click time, eliminating the per-slot
+    state writes that previously fanned out the Svelte reactive flush
+    into ``effect_update_depth_exceeded``.
+
+    Race-graceful: a click on a slot whose case has been concurrently
+    moved out of the visible window short-circuits to ``gr.skip()``
+    rather than guessing. Production scrolls only 50 visible at a time
+    so this is reachable in theory; defensive in practice."""
+    cases = visible_cases or []
+    if slot_index < 0 or slot_index >= len(cases):
+        return gr.skip()
+    clicked = cases[slot_index].get("case_id")
+    if not clicked:
+        return gr.skip()
+    if expanded_case_id == clicked:
+        return None  # collapse
+    return clicked  # expand (or swap from another card)
 
 
 def _build_my_cases(blocks: gr.Blocks) -> dict:
@@ -1279,7 +1314,9 @@ def _build_my_cases(blocks: gr.Blocks) -> dict:
     wiring at the build_surgeon_app level)."""
     header_md = gr.Markdown("", elem_id="my-cases-header")
     empty_state_md = gr.Markdown(_EMPTY_CASES_MARKDOWN, visible=True)
+    # Two states at tab root — no per-slot states (Brief #3.1.1).
     expanded_case_id_state = gr.State(None)
+    visible_cases_state = gr.State([])
 
     slots: list[dict] = []
     for i in range(_MAX_VISIBLE_MY_CASES_SLOTS):
@@ -1287,37 +1324,35 @@ def _build_my_cases(blocks: gr.Blocks) -> dict:
             visible=False, elem_id=f"my-case-slot-{i}"
         ) as group:
             html = gr.HTML("")
-            # Compact toggle button below the card body — same click-
-            # capture pattern as Action Required's per-slot action
-            # button. Labeling it neutrally so the same widget handles
-            # both "expand" and "collapse" without re-rendering.
+            # Click capture — same idiom as the Action Required tab's
+            # per-slot action button.
             btn = gr.Button(
                 "View details / collapse",
                 variant="secondary",
                 size="sm",
                 elem_id=f"my-case-btn-{i}",
             )
-            case_id_state = gr.State("")
         slots.append({
             "group": group,
             "html": html,
             "btn": btn,
-            "case_id_state": case_id_state,
         })
 
     footer_md = gr.Markdown("", elem_id="my-cases-footer")
     timer = gr.Timer(value=30, active=True)
 
-    # Output ordering — used by render_my_cases, the click handler, and
-    # the load/tick wirings below. Single source of truth.
+    # Output ordering — used by render_my_cases and the two render-
+    # trigger wirings below. Single source of truth for the tuple shape.
     render_outputs: list = [
-        header_md, empty_state_md, footer_md, expanded_case_id_state,
+        header_md,            # [0]
+        empty_state_md,       # [1]
+        footer_md,            # [2]
+        visible_cases_state,  # [3]
     ]
     for s in slots:
-        render_outputs.extend([
-            s["group"], s["html"], s["case_id_state"],
-        ])
+        render_outputs.extend([s["group"], s["html"]])
 
+    # Render triggers — initial mount, periodic refresh, post-click.
     blocks.load(
         render_my_cases,
         inputs=[expanded_case_id_state],
@@ -1328,22 +1363,55 @@ def _build_my_cases(blocks: gr.Blocks) -> dict:
         inputs=[expanded_case_id_state],
         outputs=render_outputs,
     )
+    # Click handlers write ONLY to expanded_case_id_state. Its .change
+    # is the single trigger that re-runs render after a click — no
+    # cycle, no cascade.
+    expanded_case_id_state.change(
+        render_my_cases,
+        inputs=[expanded_case_id_state],
+        outputs=render_outputs,
+    )
 
-    for s in slots:
+    for i, s in enumerate(slots):
         s["btn"].click(
-            _my_case_click_handler,
-            inputs=[expanded_case_id_state, s["case_id_state"]],
-            outputs=render_outputs,
+            # Factory closure — Gradio's argument introspection can't
+            # see through ``functools.partial``'s bound positional arg
+            # and emits "Expected N arguments, received M" warnings on
+            # build. A nested def has the same closure semantics (each
+            # call to the factory creates a fresh ``slot_index``
+            # binding, avoiding the late-binding gotcha) but exposes
+            # the inspected signature cleanly.
+            _make_my_case_slot_handler(i),
+            inputs=[visible_cases_state, expanded_case_id_state],
+            outputs=[expanded_case_id_state],
         )
 
     return {
         "header_md": header_md,
         "empty_state_md": empty_state_md,
         "expanded_case_id_state": expanded_case_id_state,
+        "visible_cases_state": visible_cases_state,
         "slots": slots,
         "footer_md": footer_md,
         "timer": timer,
     }
+
+
+def _make_my_case_slot_handler(slot_index: int):
+    """Per-slot click handler factory. Returns a fresh function whose
+    closure captures ``slot_index`` by value (each call creates an
+    independent binding). Gradio inspects the returned function's
+    signature for input-count validation — it sees the explicit two-arg
+    signature ``(visible_cases, expanded_case_id)`` cleanly, unlike
+    ``functools.partial`` whose bound-arg layer Gradio's signature
+    walker can't see through."""
+
+    def handler(visible_cases, expanded_case_id):
+        return _my_case_click_handler(
+            slot_index, visible_cases, expanded_case_id,
+        )
+
+    return handler
 
 
 # ----- Action Required tab -----
@@ -1433,13 +1501,21 @@ def render_action_required(request: gr.Request) -> tuple:
     Returns a flat tuple matching the outputs wired in
     ``_build_action_required``:
 
-        counter_md, empty_html_update, then per-slot:
-            group_visible, html_value, button_update,
-            item_id_state, action_state
+        [0]  counter_md value
+        [1]  empty_html update
+        [2]  visible_attention_state value (list[dict] indexed by slot)
+        then per slot i in [0, _MAX_VISIBLE_ACTION_CARDS):
+            group visibility update
+            html value
+            button update
 
-    Folder slug + username come exclusively from the session — never
-    from form/event data. Unauthenticated requests render the empty
-    state (defensive; production auth_dep gates /app/)."""
+    Brief #3.1.1: per-slot ``item_id_state`` / ``action_state`` retired
+    in favour of a single shared ``visible_attention_state`` list. Same
+    anti-pattern that hung the My Cases tab — preempted here before
+    Action Required's 10-slot pool hit Svelte's flush threshold under
+    load.
+
+    Folder slug + username come exclusively from the session."""
     scope = _scope_from_request(request)
     if scope is None:
         return _ar_empty_outputs()
@@ -1455,19 +1531,22 @@ def render_action_required(request: gr.Request) -> tuple:
     counter_text = _format_ar_counter(n_items, n_resolved_today, n_pending)
 
     if n_items == 0:
-        outputs: list = [counter_text, gr.update(visible=True)]
+        outputs: list = [counter_text, gr.update(visible=True), []]
         for _ in range(_MAX_VISIBLE_ACTION_CARDS):
             outputs.extend([
                 gr.update(visible=False),  # group
                 "",                          # html
                 gr.update(visible=False),    # button
-                0,                           # item_id_state
-                "",                          # action_state
             ])
         return tuple(outputs)
 
-    outputs = [counter_text, gr.update(visible=False)]
     visible_items = items[:_MAX_VISIBLE_ACTION_CARDS]
+    visible_attention_payload: list[dict] = [
+        {"item_id": it.id, "action": action_for_type(it.type) or ""}
+        for it in visible_items
+    ]
+
+    outputs = [counter_text, gr.update(visible=False), visible_attention_payload]
     for i in range(_MAX_VISIBLE_ACTION_CARDS):
         if i < len(visible_items):
             it = visible_items[i]
@@ -1477,47 +1556,42 @@ def render_action_required(request: gr.Request) -> tuple:
             if action is None:
                 # Unknown type — read-only card, no action button.
                 outputs.append(gr.update(visible=False))
-                outputs.append(it.id)
-                outputs.append("")
             else:
                 outputs.append(
                     gr.update(value=action.title(), visible=True)
                 )
-                outputs.append(it.id)
-                outputs.append(action)
         else:
             outputs.extend([
                 gr.update(visible=False),
                 "",
                 gr.update(visible=False),
-                0,
-                "",
             ])
     return tuple(outputs)
 
 
 def _ar_empty_outputs() -> tuple:
     """Outputs tuple for unauthenticated / no-scope renders. Empty-state
-    visible, all card slots hidden."""
-    outputs: list = ["", gr.update(visible=True)]
+    visible, all card slots hidden, visible_attention empty."""
+    outputs: list = ["", gr.update(visible=True), []]
     for _ in range(_MAX_VISIBLE_ACTION_CARDS):
         outputs.extend([
-            gr.update(visible=False), "", gr.update(visible=False), 0, "",
+            gr.update(visible=False), "", gr.update(visible=False),
         ])
     return tuple(outputs)
 
 
 def _ar_action_handler(item_id: int, action: str, request: gr.Request) -> tuple:
-    """Click handler for one card's action button. Validates via the
-    repo (which raises on type-mismatch / scope-violation / already-
-    closed), then re-renders the entire Action Required surface so the
-    actioned card vanishes and the counter strip updates without
-    waiting for the 30 s timer.
+    """Inner click handler: apply one (item_id, action) pair against the
+    repo and re-render the entire Action Required surface. Validates
+    via the repo (which raises on type-mismatch / scope-violation /
+    already-closed). Kept as a distinct function so existing tests can
+    exercise the (item_id, action) contract directly; the slot-indexed
+    click wire :func:`_ar_slot_click_handler` adapts to this signature.
 
-    Race-graceful: ``AttentionItemAlreadyClosedError`` and
-    ``AttentionItemNotFoundError`` collapse to silent re-render — they
-    indicate a stale tab or a double-click, both fixable by simply
-    reloading the live state."""
+    Race-graceful: ``AttentionItemAlreadyClosedError`` /
+    ``AttentionItemNotFoundError`` / ``AttentionItemActionMismatchError``
+    collapse to silent re-render — they indicate a stale tab or a
+    double-click, both fixable by simply reloading the live state."""
     scope = _scope_from_request(request)
     if scope is None or not item_id:
         return render_action_required(request)
@@ -1537,6 +1611,29 @@ def _ar_action_handler(item_id: int, action: str, request: gr.Request) -> tuple:
     return render_action_required(request)
 
 
+def _ar_slot_click_handler(
+    slot_index: int,
+    visible_attention: list[dict] | None,
+    request: gr.Request,
+) -> tuple:
+    """Slot-indexed click wire. Closure-captured ``slot_index`` resolves
+    to (item_id, action) by indexing the shared
+    ``visible_attention_state`` list at click time — eliminating the
+    per-slot identity states that produced the Svelte reactive cascade
+    in the original Brief #3 implementation. Delegates to
+    :func:`_ar_action_handler` for the actual DB action so the existing
+    (item_id, action) test surface stays unchanged."""
+    items = visible_attention or []
+    if slot_index < 0 or slot_index >= len(items):
+        # Stale-tab / hidden-slot race — refresh the live state without
+        # mutating anything.
+        return render_action_required(request)
+    entry = items[slot_index]
+    item_id = entry.get("item_id") or 0
+    action = entry.get("action") or ""
+    return _ar_action_handler(item_id, action, request)
+
+
 def _build_action_required(blocks: gr.Blocks) -> dict:
     """Construct the Action Required tab body. Pre-allocates
     ``_MAX_VISIBLE_ACTION_CARDS`` slots so click handlers can be wired
@@ -1546,6 +1643,8 @@ def _build_action_required(blocks: gr.Blocks) -> dict:
     timer wiring at the build_surgeon_app level)."""
     counter_md = gr.Markdown("", elem_id="ar-counter")
     empty_html = gr.HTML(_AR_EMPTY_HTML, visible=True, elem_id="ar-empty")
+    # Single shared state at tab root — no per-slot identity states.
+    visible_attention_state = gr.State([])
 
     slots = []
     for i in range(_MAX_VISIBLE_ACTION_CARDS):
@@ -1559,46 +1658,56 @@ def _build_action_required(blocks: gr.Blocks) -> dict:
                     "Action", variant="primary", visible=False,
                     elem_id=f"ar-card-btn-{i}",
                 )
-            item_id_state = gr.State(0)
-            action_state = gr.State("")
         slots.append({
             "group": group,
             "html": html,
             "btn": action_btn,
-            "item_id_state": item_id_state,
-            "action_state": action_state,
         })
 
-    # Render-output ordering — also the click-handler output ordering,
-    # since post-action refresh re-runs the same render fn.
-    render_outputs: list = [counter_md, empty_html]
+    # Render-output ordering — also the slot-click handler's output
+    # ordering, since post-action refresh re-runs the same render fn.
+    render_outputs: list = [counter_md, empty_html, visible_attention_state]
     for s in slots:
-        render_outputs.extend([
-            s["group"], s["html"], s["btn"],
-            s["item_id_state"], s["action_state"],
-        ])
+        render_outputs.extend([s["group"], s["html"], s["btn"]])
 
     timer = gr.Timer(value=30, active=True)
 
     blocks.load(render_action_required, None, render_outputs)
     timer.tick(render_action_required, None, render_outputs)
 
-    # Per-slot click handler. Each button's inputs are its own
-    # item_id_state + action_state so the handler knows which item to
-    # act on without needing to inspect the Blocks tree.
-    for s in slots:
+    # Per-slot click handler. ``functools.partial`` closure-captures
+    # the slot index so each button's handler knows its own position
+    # without needing per-slot identity states.
+    for i, s in enumerate(slots):
         s["btn"].click(
-            _ar_action_handler,
-            inputs=[s["item_id_state"], s["action_state"]],
+            _make_ar_slot_handler(i),
+            inputs=[visible_attention_state],
             outputs=render_outputs,
         )
 
     return {
         "counter_md": counter_md,
         "empty_html": empty_html,
+        "visible_attention_state": visible_attention_state,
         "slots": slots,
         "timer": timer,
     }
+
+
+def _make_ar_slot_handler(slot_index: int):
+    """Per-slot click handler factory. Same Gradio-introspection
+    rationale as :func:`_make_my_case_slot_handler` — Gradio's signature
+    walker can't see through ``functools.partial``, so we use a nested
+    def whose explicit two-arg signature
+    ``(visible_attention, request)`` matches the input count cleanly.
+    ``request: gr.Request`` is auto-injected by Gradio."""
+
+    def handler(visible_attention, request: gr.Request):
+        return _ar_slot_click_handler(
+            slot_index, visible_attention, request,
+        )
+
+    return handler
 
 
 # ----- top-level Blocks build -----

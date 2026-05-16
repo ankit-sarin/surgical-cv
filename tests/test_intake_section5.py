@@ -75,23 +75,17 @@ def test_intake_tab_state_count_unchanged_at_thirteen():
     for the Intake tab must hold (show_more was hoisted up but is still
     counted among them).
 
-    Brief #3 added the Action Required tab which allocates 2 states per
-    card slot (item_id_state + action_state). Brief #3.1 added the My
-    Cases card pool — one ``case_id_state`` per slot plus a single
-    ``expanded_case_id_state`` for the whole tab. Back out both tab
+    Brief #3.1.1 collapsed both card-pool tabs to a constant number of
+    states per tab (no per-slot fanout): My Cases owns
+    ``expanded_case_id_state`` + ``visible_cases_state`` (2 states),
+    AR owns ``visible_attention_state`` (1 state). Back out those tab
     contributions so this test keeps watching Intake drift only."""
-    from app.surgeon_app import (
-        _MAX_VISIBLE_ACTION_CARDS, _MAX_VISIBLE_MY_CASES_SLOTS,
-    )
-
     blocks = build_surgeon_app()
     total_states = sum(
         1 for c in blocks.blocks.values() if isinstance(c, gr.State)
     )
-    # AR tab: 2 states per pre-allocated slot.
-    ar_states = _MAX_VISIBLE_ACTION_CARDS * 2
-    # My Cases tab: 1 case_id state per slot + 1 expanded_case_id state.
-    my_cases_states = _MAX_VISIBLE_MY_CASES_SLOTS + 1
+    ar_states = 1  # visible_attention_state
+    my_cases_states = 2  # expanded_case_id_state + visible_cases_state
     intake_states = total_states - ar_states - my_cases_states
     assert intake_states == 13
 

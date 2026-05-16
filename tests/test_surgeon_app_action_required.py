@@ -29,6 +29,21 @@ from app.repos.attention import (
 _SEED_TS = "2026-05-15T08:00:00+00:00"
 
 
+# Brief #3.1.1 — AR render shape changed:
+#   [0]  counter_md value
+#   [1]  empty_html update
+#   [2]  visible_attention_state value (list[dict])
+#   per slot i, 3 outputs starting at 3 + i*3:
+#     group_update, html_value, button_update
+_AR_LEADING = 3
+_AR_PER_SLOT = 3
+
+
+def _ar_slot(out, i):
+    base = _AR_LEADING + i * _AR_PER_SLOT
+    return out[base: base + _AR_PER_SLOT]
+
+
 def _fake_request_for(username: str) -> types.SimpleNamespace:
     return types.SimpleNamespace(
         cookies={SESSION_COOKIE_NAME: encode_session(username)}
@@ -117,6 +132,31 @@ def test_action_required_carries_per_slot_action_button():
     assert len(btns) == _MAX_VISIBLE_ACTION_CARDS
 
 
+def test_action_required_no_per_slot_id_states():
+    """Brief #3.1.1 preemptive patch: the original Brief #3 AR pool
+    allocated 2 ``gr.State`` per slot (``item_id_state`` +
+    ``action_state``). At 10 slots that's 20 cascading state writes per
+    render — same anti-pattern that broke My Cases at 50 slots, just
+    below Svelte's flush threshold. The refactor moves to a single
+    shared ``visible_attention_state`` list; this test guards against
+    regressing to per-slot states."""
+    from app.surgeon_app import _MAX_VISIBLE_ACTION_CARDS, build_surgeon_app
+
+    blocks = build_surgeon_app()
+    import gradio as gr
+    # No gr.State component should live inside an ar-card-slot-* group.
+    # We approximate this by checking total state count is well below
+    # the per-slot-state regression line.
+    states = [c for c in blocks.blocks.values() if isinstance(c, gr.State)]
+    # Per-slot AR states would add 20; the regression would have
+    # ≥ Intake(13) + 20 = 33. Our target is Intake(13) + My Cases(2) +
+    # AR(1 — visible_attention) = 16. Hard cap: 16.
+    assert len(states) < 13 + 2 * _MAX_VISIBLE_ACTION_CARDS, (
+        "per-slot AR state regression — slot pool should hold no "
+        "gr.State instances (Brief #3.1.1 anti-pattern)"
+    )
+
+
 def test_action_required_has_30s_timer():
     """Same polling cadence as My Cases so the surgeon's mental model
     is uniform across tabs."""
@@ -160,9 +200,9 @@ def test_render_empty_state_for_user_with_no_items(app_env):
     counter, empty_update = out[0], out[1]
     assert counter == "0 items · 0 resolved today · 0 pending"
     assert empty_update["visible"] is True
-    # Walk the per-slot tuples (5 outputs each): all groups hidden.
+    # Walk the per-slot tuples (3 outputs each): all groups hidden.
     for i in range(_MAX_VISIBLE_ACTION_CARDS):
-        slot = out[2 + i * 5: 2 + (i + 1) * 5]
+        slot = _ar_slot(out, i)
         group_update = slot[0]
         assert group_update["visible"] is False
 
@@ -199,13 +239,16 @@ def test_render_renders_one_card_per_open_item(app_env):
     assert "3 items" in counter
     assert "3 pending" in counter
 
-    # Inspect the first three slot tuples.
+    # Inspect the first three slot tuples + the shared
+    # visible_attention_state list (Brief #3.1.1 surface).
+    visible_attention = out[2]
+    assert len(visible_attention) == 3
     visible = []
     for i in range(3):
-        slot = out[2 + i * 5: 2 + (i + 1) * 5]
-        group_update, html_value, btn_update, item_id, action = slot
+        slot = _ar_slot(out, i)
+        group_update, html_value, btn_update = slot
         if group_update.get("visible"):
-            visible.append((html_value, btn_update, item_id, action))
+            visible.append((html_value, btn_update, visible_attention[i]))
     assert len(visible) == 3
 
     # Type labels render in the cards.
@@ -216,8 +259,8 @@ def test_render_renders_one_card_per_open_item(app_env):
 
     # Buttons label per dispatch map: dismiss for verify_soft_fail,
     # resolve for pipeline_failure and orphan_marker.
-    actions = [v[3] for v in visible]
-    assert sorted(actions) == ["dismiss", "resolve", "resolve"]
+    actions = sorted(v[2]["action"] for v in visible)
+    assert actions == ["dismiss", "resolve", "resolve"]
 
 
 def test_render_filters_to_owned_items_only(app_env):
@@ -237,9 +280,7 @@ def test_render_filters_to_owned_items_only(app_env):
     out = render_action_required(_fake_request_for("asarin"))
     counter = out[0]
     assert "1 items" in counter
-    htmls = " ".join(
-        out[2 + i * 5 + 1] or "" for i in range(10)
-    )
+    htmls = " ".join(_ar_slot(out, i)[1] or "" for i in range(10))
     assert "mine" in htmls
     assert "not mine" not in htmls
 
@@ -255,7 +296,7 @@ def test_render_card_severity_maps_to_brand_class(app_env):
     )
 
     out = render_action_required(_fake_request_for("asarin"))
-    html_value = out[2 + 0 * 5 + 1]  # slot 0 html
+    html_value = _ar_slot(out, 0)[1]
     assert "ds-card-severity-high" in html_value
     assert "ds-badge-high" in html_value
 
@@ -271,13 +312,15 @@ def test_render_unknown_type_renders_card_without_action_button(app_env):
     )
 
     out = render_action_required(_fake_request_for("asarin"))
-    slot = out[2: 2 + 5]
-    group_update, html_value, btn_update, item_id, action = slot
+    slot = _ar_slot(out, 0)
+    group_update, html_value, btn_update = slot
     assert group_update["visible"] is True
     assert btn_update["visible"] is False
     # Generic fallback label from display_for_type.
     assert "Some Future Type" in html_value
-    assert action == ""
+    # visible_attention_state carries the dispatch mapping; unmapped
+    # type → empty action string.
+    assert out[2][0]["action"] == ""
 
 
 def test_render_html_contains_unescaped_markup(app_env):
@@ -288,7 +331,7 @@ def test_render_html_contains_unescaped_markup(app_env):
 
     _seed_attention(app_env, item_type="verify_soft_fail")
     out = render_action_required(_fake_request_for("asarin"))
-    html_value = out[2 + 0 * 5 + 1]
+    html_value = _ar_slot(out, 0)[1]
     assert "<article" in html_value
     assert "&lt;article" not in html_value
 

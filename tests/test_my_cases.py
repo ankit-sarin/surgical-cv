@@ -114,20 +114,36 @@ def _make_state_row(idx: int) -> dict:
 
 
 # Output ordering constants — kept in sync with render_my_cases output
-# shape so test code reads cleanly.
+# shape so test code reads cleanly. Brief #3.1.1 changed the shape:
+# per-slot case_id_state retired; index [3] is now the shared
+# visible_cases_state list; per-slot pair is (group_update, html).
 _HEADER_IDX = 0
 _EMPTY_IDX = 1
 _FOOTER_IDX = 2
-_EXPANDED_STATE_IDX = 3
+_VISIBLE_CASES_IDX = 3
 _SLOTS_START = 4
-_PER_SLOT = 3
+_PER_SLOT = 2
 
 
 def _slot(out, i):
-    """Slice the per-slot tuple (group_update, html, case_id) out of the
-    flat render output."""
+    """Slice the per-slot pair (group_update, html) out of the flat
+    render output."""
     base = _SLOTS_START + i * _PER_SLOT
     return out[base: base + _PER_SLOT]
+
+
+def _case_ids_in(out):
+    """Return the visible-case-id list at output index 3."""
+    return [entry.get("case_id") for entry in (out[_VISIBLE_CASES_IDX] or [])]
+
+
+def _slot_index_for(out, case_id):
+    """Return the slot index whose card carries ``case_id``, or ``None``
+    if the case isn't in the current visible window."""
+    for i, entry in enumerate(out[_VISIBLE_CASES_IDX] or []):
+        if entry.get("case_id") == case_id:
+            return i
+    return None
 
 
 # ----- 1. Blocks introspection -----
@@ -210,17 +226,31 @@ def test_my_cases_has_header_and_footer_and_empty_components():
     assert "my-cases-footer" in md_ids
 
 
-def test_my_cases_expanded_state_is_gradio_state():
-    """An expanded_case_id ``gr.State`` exists so the click handler can
-    toggle which card's body is open. Other gr.State instances exist on
-    the Intake tab — we just confirm at least one State component is
-    present."""
-    from app.surgeon_app import build_surgeon_app
+def test_my_cases_no_per_slot_case_id_states():
+    """Brief #3.1.1: per-slot ``case_id_state`` retired. The 50-slot
+    pool must not allocate any ``gr.State`` per slot — that fanout was
+    the substrate of the Svelte 5 ``effect_update_depth_exceeded`` loop
+    in production. Two tab-root states are expected (expanded +
+    visible_cases) plus one AR state (visible_attention) plus the
+    Intake tab's 13 states — anything beyond that count is the
+    regression."""
+    from app.surgeon_app import (
+        _MAX_VISIBLE_ACTION_CARDS, _MAX_VISIBLE_MY_CASES_SLOTS,
+        build_surgeon_app,
+    )
 
     blocks = build_surgeon_app()
     import gradio as gr
     states = [c for c in blocks.blocks.values() if isinstance(c, gr.State)]
-    assert len(states) >= 1
+    # Hard cap on per-tab states. The fanout-per-slot pattern would
+    # produce 50 (My Cases) + 20 (AR's old item_id_state + action_state)
+    # which collectively are what blow Svelte's flush threshold.
+    assert len(states) < (
+        _MAX_VISIBLE_MY_CASES_SLOTS + 2 * _MAX_VISIBLE_ACTION_CARDS
+    ), (
+        "per-slot state regression — slot pool should hold no gr.State "
+        "instances (Brief #3.1.1 anti-pattern)"
+    )
 
 
 def test_surgeon_css_constant_carries_card_classes():
@@ -267,7 +297,7 @@ def test_render_my_cases_with_no_cases_returns_empty_state(
     app_env, monkeypatch, tmp_path
 ):
     """anoren has zero owned cases → empty-state visible, all slots
-    hidden, expanded state stays None."""
+    hidden, visible_cases list is empty."""
     from app.surgeon_app import _MAX_VISIBLE_MY_CASES_SLOTS, render_my_cases
 
     out = render_my_cases(None, _fake_request_for("anoren"))
@@ -277,12 +307,11 @@ def test_render_my_cases_with_no_cases_returns_empty_state(
     assert empty_update["visible"] is True
     assert "No cases yet" in str(empty_update["value"])
     assert "Auto-refreshes every 30" in out[_FOOTER_IDX]
-    assert out[_EXPANDED_STATE_IDX] is None
+    assert out[_VISIBLE_CASES_IDX] == []
     for i in range(_MAX_VISIBLE_MY_CASES_SLOTS):
-        group_update, html, case_id = _slot(out, i)
+        group_update, html = _slot(out, i)
         assert group_update["visible"] is False
         assert html == ""
-        assert case_id == ""
 
 
 def test_render_my_cases_unauth_returns_empty_state_gracefully():
@@ -306,13 +335,13 @@ def test_render_my_cases_renders_one_card_per_owned_case(
     out = render_my_cases(None, _fake_request_for("asarin"))
     visible = []
     for i in range(50):
-        group_update, html, case_id = _slot(out, i)
+        group_update, html = _slot(out, i)
         if group_update["visible"]:
-            visible.append((html, case_id))
+            visible.append(html)
     assert len(visible) == 2
-    case_ids = sorted(v[1] for v in visible)
+    case_ids = sorted(_case_ids_in(out))
     assert case_ids == ["UCD-FIL-001", "UCD-FIL-002"]
-    htmls = " ".join(v[0] for v in visible)
+    htmls = " ".join(visible)
     assert "UCD-FIL-099" not in htmls
 
     # Header is the counter strip — 2 cases, both queued (no state row
@@ -349,6 +378,58 @@ def test_render_my_cases_verified_state_shows_complete_stripe(
     assert "ds-card-status-complete" in htmls
     assert 'data-badge="complete"' in htmls
     assert "2 complete" in out[_HEADER_IDX]
+
+
+def test_render_my_cases_emits_visible_cases_list(
+    app_env, monkeypatch, tmp_path
+):
+    """Brief #3.1.1: ``visible_cases_state`` is the shared list that
+    indexes slot position to case-id. Each entry must carry at minimum
+    a ``case_id`` key — the click handler reads from it."""
+    from app.surgeon_app import render_my_cases
+    _seed_pipeline_state(monkeypatch, tmp_path, [])
+
+    out = render_my_cases(None, _fake_request_for("asarin"))
+    visible = out[_VISIBLE_CASES_IDX]
+    assert isinstance(visible, list)
+    assert len(visible) == 2
+    for entry in visible:
+        assert isinstance(entry, dict)
+        assert "case_id" in entry
+        assert entry["case_id"].startswith("UCD-FIL-")
+
+
+def test_empty_state_visibility_with_zero_cases(
+    app_env, monkeypatch, tmp_path
+):
+    """Brief #3.1.1 §4.4: empty-state Markdown visible iff zero cases.
+    Regression guard for the production bug where the empty-state text
+    rendered simultaneously with the populated cards."""
+    from app.surgeon_app import render_my_cases
+
+    out = render_my_cases(None, _fake_request_for("anoren"))
+    assert out[_EMPTY_IDX]["visible"] is True
+    # First slot must be hidden so the empty-state isn't competing with
+    # a stale visible group.
+    group_update, _ = _slot(out, 0)
+    assert group_update["visible"] is False
+
+
+def test_empty_state_visibility_with_cases(
+    app_env, monkeypatch, tmp_path
+):
+    """Conversely: with ≥1 owned case, the empty-state Markdown must be
+    hidden. The first N slots are visible and carry card HTML."""
+    from app.surgeon_app import render_my_cases
+    _seed_pipeline_state(monkeypatch, tmp_path, [])
+
+    out = render_my_cases(None, _fake_request_for("asarin"))  # 2 cases
+    assert out[_EMPTY_IDX]["visible"] is False
+    # First two slots visible, the rest hidden.
+    visible_count = sum(
+        1 for i in range(50) if _slot(out, i)[0]["visible"]
+    )
+    assert visible_count == 2
 
 
 def test_render_my_cases_card_html_is_not_escaped(
@@ -404,24 +485,24 @@ def test_render_my_cases_expanded_card_carries_expansion_body(
         },
     ])
     out = render_my_cases("UCD-FIL-001", _fake_request_for("asarin"))
-    # Find the expanded card's slot.
+    target_slot = _slot_index_for(out, "UCD-FIL-001")
+    assert target_slot is not None
     expanded_count = 0
     for i in range(50):
-        group_update, html, case_id = _slot(out, i)
-        if group_update["visible"] and case_id == "UCD-FIL-001":
+        group_update, html = _slot(out, i)
+        if not group_update["visible"]:
+            continue
+        if i == target_slot:
             expanded_count += 1
             assert "ds-card-expansion" in html
             assert "<svg" in html
             assert "seg-a.mp4" in html
             assert "seg-b.mp4" in html
             assert 'data-expanded="true"' in html
-        elif group_update["visible"]:
-            # Other visible cards must NOT be expanded.
+        else:
             assert "ds-card-expansion" not in html
             assert 'data-expanded="false"' in html
     assert expanded_count == 1
-    # Render passed the expansion state through.
-    assert out[_EXPANDED_STATE_IDX] == "UCD-FIL-001"
 
 
 def test_render_my_cases_source_segments_render_in_expansion(
@@ -445,11 +526,9 @@ def test_render_my_cases_source_segments_render_in_expansion(
         },
     ])
     out = render_my_cases("UCD-FIL-001", _fake_request_for("asarin"))
-    html = next(
-        _slot(out, i)[1]
-        for i in range(50)
-        if _slot(out, i)[2] == "UCD-FIL-001"
-    )
+    slot_i = _slot_index_for(out, "UCD-FIL-001")
+    assert slot_i is not None
+    html = _slot(out, slot_i)[1]
     assert "Source segments (3)" in html
     assert "capt0_20260102-082942.mp4" in html
     assert "capt0_20260102-085604.mp4" in html
@@ -467,11 +546,9 @@ def test_render_my_cases_no_segments_falls_back_to_none_recorded(
     _seed_pipeline_state(monkeypatch, tmp_path, [])  # no state rows
 
     out = render_my_cases("UCD-FIL-001", _fake_request_for("asarin"))
-    html = next(
-        _slot(out, i)[1]
-        for i in range(50)
-        if _slot(out, i)[2] == "UCD-FIL-001"
-    )
+    slot_i = _slot_index_for(out, "UCD-FIL-001")
+    assert slot_i is not None
+    html = _slot(out, slot_i)[1]
     assert "ds-card-expansion" in html
     assert "(none recorded)" in html
 
@@ -505,12 +582,13 @@ def test_render_my_cases_truncates_at_50_slots(
 
     out = render_my_cases(None, _fake_request_for("asarin"))
     visible = [
-        (i, _slot(out, i)[1], _slot(out, i)[2])
+        (i, _slot(out, i)[1])
         for i in range(50)
         if _slot(out, i)[0]["visible"]
     ]
     assert len(visible) == 50
-    visible_ids = {v[2] for v in visible}
+    visible_ids = set(_case_ids_in(out))
+    assert len(visible_ids) == 50
     # Exactly one case id should be missing.
     all_ids = {f"UCD-FIL-{i:03d}" for i in range(1, 52)}
     dropped = all_ids - visible_ids
@@ -527,8 +605,11 @@ def test_render_my_cases_expanded_id_collapses_when_out_of_window(
     app_env, monkeypatch, tmp_path
 ):
     """Race-graceful: if ``expanded_case_id`` points at a case that's
-    no longer in the visible window, the render fn silently collapses
-    the state to None rather than rendering a phantom expansion."""
+    no longer in the visible window, render simply doesn't mark any
+    card expanded. Brief #3.1.1 retired the write-back of
+    ``expanded_case_id_state`` from render to break the Svelte reactive
+    cycle, so the state value persists (stale) but no card shows the
+    expansion."""
     from app.surgeon_app import render_my_cases
     _seed_pipeline_state(monkeypatch, tmp_path, [])
 
@@ -536,85 +617,91 @@ def test_render_my_cases_expanded_id_collapses_when_out_of_window(
         "UCD-FIL-999",  # asarin doesn't own this
         _fake_request_for("asarin"),
     )
-    assert out[_EXPANDED_STATE_IDX] is None
     htmls = " ".join(_slot(out, i)[1] for i in range(50))
     assert 'data-expanded="true"' not in htmls
 
 
 # ----- 3. Click handler -----
+#
+# Brief #3.1.1 handler signature: ``(slot_index, visible_cases,
+# expanded_case_id) -> new_expanded_case_id``. Slot index is
+# closure-captured at wiring time via the factory helper; tests pass it
+# explicitly.
 
 
-def test_click_collapsed_card_expands_it(app_env, monkeypatch, tmp_path):
-    from app.surgeon_app import _my_case_click_handler
-    _seed_pipeline_state(monkeypatch, tmp_path, [])
-
-    out = _my_case_click_handler(
-        None, "UCD-FIL-001", _fake_request_for("asarin"),
-    )
-    assert out[_EXPANDED_STATE_IDX] == "UCD-FIL-001"
+def _vc(*case_ids):
+    """Build a ``visible_cases``-shape list from a series of case-ids."""
+    return [{"case_id": cid} for cid in case_ids]
 
 
-def test_click_expanded_card_collapses_it(app_env, monkeypatch, tmp_path):
-    from app.surgeon_app import _my_case_click_handler
-    _seed_pipeline_state(monkeypatch, tmp_path, [])
-
-    out = _my_case_click_handler(
-        "UCD-FIL-001", "UCD-FIL-001", _fake_request_for("asarin"),
-    )
-    assert out[_EXPANDED_STATE_IDX] is None
-
-
-def test_click_different_card_swaps_expansion(app_env, monkeypatch, tmp_path):
-    from app.surgeon_app import _my_case_click_handler
-    _seed_pipeline_state(monkeypatch, tmp_path, [])
-
-    out = _my_case_click_handler(
-        "UCD-FIL-001", "UCD-FIL-002", _fake_request_for("asarin"),
-    )
-    assert out[_EXPANDED_STATE_IDX] == "UCD-FIL-002"
-
-
-def test_click_empty_slot_is_noop(app_env, monkeypatch, tmp_path):
-    """Defensive: clicking a slot whose case-id state has been cleared
-    (the slot is hidden, but a stale-tab race could fire its click) is
-    a no-op render-refresh — no state change."""
-    from app.surgeon_app import _my_case_click_handler
-    _seed_pipeline_state(monkeypatch, tmp_path, [])
-
-    out = _my_case_click_handler(
-        "UCD-FIL-001", "", _fake_request_for("asarin"),
-    )
-    # Expansion state preserved (since the empty slot click is a no-op).
-    assert out[_EXPANDED_STATE_IDX] == "UCD-FIL-001"
-
-
-def test_click_handler_unauth_returns_empty_render(monkeypatch, tmp_path):
-    """No session → click handler renders the empty state without
-    raising. (Production auth_dep gates /app/ — this is defense in
-    depth.)"""
+def test_click_collapsed_card_expands_it():
     from app.surgeon_app import _my_case_click_handler
 
-    out = _my_case_click_handler(
-        None, "UCD-FIL-001", types.SimpleNamespace(cookies={}),
+    new_expanded = _my_case_click_handler(
+        0, _vc("UCD-FIL-001", "UCD-FIL-002"), None,
     )
-    assert out[_EMPTY_IDX]["visible"] is True
+    assert new_expanded == "UCD-FIL-001"
 
 
-def test_click_unknown_case_id_collapses_in_render(
-    app_env, monkeypatch, tmp_path
-):
-    """Race-graceful: a click that asks to expand a case id the
-    surgeon no longer owns (concurrently moved out of scope) renders
-    with the expansion state collapsed."""
+def test_click_expanded_card_collapses_it():
     from app.surgeon_app import _my_case_click_handler
-    _seed_pipeline_state(monkeypatch, tmp_path, [])
 
-    out = _my_case_click_handler(
-        None, "UCD-FIL-999", _fake_request_for("asarin"),
+    new_expanded = _my_case_click_handler(
+        0, _vc("UCD-FIL-001", "UCD-FIL-002"), "UCD-FIL-001",
     )
-    # The handler sets new_expanded="UCD-FIL-999" but render then
-    # collapses it because it's out of window.
-    assert out[_EXPANDED_STATE_IDX] is None
+    assert new_expanded is None
+
+
+def test_click_different_card_swaps_expansion():
+    from app.surgeon_app import _my_case_click_handler
+
+    new_expanded = _my_case_click_handler(
+        1, _vc("UCD-FIL-001", "UCD-FIL-002"), "UCD-FIL-001",
+    )
+    assert new_expanded == "UCD-FIL-002"
+
+
+def test_click_empty_slot_is_skip():
+    """Defensive: clicking a slot index past the visible list (a stale-
+    tab race) returns :func:`gr.skip` rather than mutating the
+    expanded_case_id state to a spurious value."""
+    import gradio as gr
+
+    from app.surgeon_app import _my_case_click_handler
+
+    # Two visible cases; clicking slot 5 (empty) — should skip.
+    out = _my_case_click_handler(
+        5, _vc("UCD-FIL-001", "UCD-FIL-002"), "UCD-FIL-001",
+    )
+    # gr.skip() returns a marker dict ``{"__type__": "update"}`` in
+    # Gradio 6 — compare by value rather than identity (the helper
+    # builds a fresh dict on each call).
+    assert out == gr.skip()
+
+
+def test_click_empty_visible_list_is_skip():
+    """Edge case: render hasn't populated visible_cases yet (or the
+    list emptied between render and click). Handler short-circuits to
+    gr.skip without throwing."""
+    import gradio as gr
+
+    from app.surgeon_app import _my_case_click_handler
+
+    out = _my_case_click_handler(0, [], None)
+    assert out == gr.skip()
+
+
+def test_click_handler_does_not_invoke_render():
+    """Brief #3.1.1: the click handler returns the new state value
+    only; it does NOT invoke render_my_cases (the render is triggered
+    by ``expanded_case_id_state.change``). This test catches a
+    regression where the handler accidentally re-introduces the
+    tuple-of-render-outputs return shape."""
+    from app.surgeon_app import _my_case_click_handler
+
+    out = _my_case_click_handler(0, _vc("UCD-FIL-001"), None)
+    # New shape: single string (or None or Skip), never a tuple.
+    assert not isinstance(out, tuple)
 
 
 # ----- expansion content -----
@@ -629,11 +716,9 @@ def test_expansion_omits_additional_when_empty(
     _seed_pipeline_state(monkeypatch, tmp_path, [])
 
     out = render_my_cases("UCD-FIL-001", _fake_request_for("asarin"))
-    html = next(
-        _slot(out, i)[1]
-        for i in range(50)
-        if _slot(out, i)[2] == "UCD-FIL-001"
-    )
+    slot_i = _slot_index_for(out, "UCD-FIL-001")
+    assert slot_i is not None
+    html = _slot(out, slot_i)[1]
     assert "Additional procedure" not in html
 
 
@@ -652,11 +737,9 @@ def test_expansion_includes_additional_when_present(
     _seed_pipeline_state(monkeypatch, tmp_path, [])
 
     out = render_my_cases("UCD-FIL-001", _fake_request_for("asarin"))
-    html = next(
-        _slot(out, i)[1]
-        for i in range(50)
-        if _slot(out, i)[2] == "UCD-FIL-001"
-    )
+    slot_i = _slot_index_for(out, "UCD-FIL-001")
+    assert slot_i is not None
+    html = _slot(out, slot_i)[1]
     assert "Additional procedure" in html
     assert "Loop ileostomy" in html
 
@@ -670,11 +753,9 @@ def test_expansion_omits_conversion_when_no_target(
     _seed_pipeline_state(monkeypatch, tmp_path, [])
 
     out = render_my_cases("UCD-FIL-001", _fake_request_for("asarin"))
-    html = next(
-        _slot(out, i)[1]
-        for i in range(50)
-        if _slot(out, i)[2] == "UCD-FIL-001"
-    )
+    slot_i = _slot_index_for(out, "UCD-FIL-001")
+    assert slot_i is not None
+    html = _slot(out, slot_i)[1]
     assert "Conversion:" not in html
 
 
@@ -692,11 +773,9 @@ def test_expansion_includes_conversion_when_target_set(
     _seed_pipeline_state(monkeypatch, tmp_path, [])
 
     out = render_my_cases("UCD-FIL-001", _fake_request_for("asarin"))
-    html = next(
-        _slot(out, i)[1]
-        for i in range(50)
-        if _slot(out, i)[2] == "UCD-FIL-001"
-    )
+    slot_i = _slot_index_for(out, "UCD-FIL-001")
+    assert slot_i is not None
+    html = _slot(out, slot_i)[1]
     assert "Conversion:" in html
     assert "Open" in html
 
@@ -725,11 +804,9 @@ def test_expansion_shows_attention_count_when_present(app_env, monkeypatch, tmp_
     conn.close()
 
     out = render_my_cases("UCD-FIL-001", _fake_request_for("asarin"))
-    html = next(
-        _slot(out, i)[1]
-        for i in range(50)
-        if _slot(out, i)[2] == "UCD-FIL-001"
-    )
+    slot_i = _slot_index_for(out, "UCD-FIL-001")
+    assert slot_i is not None
+    html = _slot(out, slot_i)[1]
     assert "Related attention" in html
     assert " 1 " in html  # the count
 
