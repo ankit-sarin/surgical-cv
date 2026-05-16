@@ -622,14 +622,93 @@ def _admin_resolve_handler(
 # ===== top-level Blocks build =====
 
 
-# Brief #3.1 / Brief #4 followup: no module-level CSS export. All
-# styling lives inline in the rendered HTML chunks above. The
-# previous ADMIN_CSS stylesheet — and ``css=`` on the mount — were
-# stripped after the admin tabs hung on cv.digitalsurgeon.dev with
-# the same Svelte ``effect_update_depth_exceeded`` cycle Brief
-# #3.1 chased through My Cases. Inline styles sidestep the entire
-# class of reactive-flush-meets-resize-observer problems.
-ADMIN_CSS = ""
+# Brand typography + tab styling. Kept intentionally minimal —
+# text-affecting rules only (font-family, color, size). No flex-wrap,
+# no margin: auto, no transitions on layout-affecting properties.
+# Those were the families Brief #3.1's bisection identified as
+# Svelte-cycle triggers; the previous admin stylesheet hit that class
+# with ``flex-wrap`` on the stat strip and had to be stripped wholesale.
+# This subset stays well clear.
+#
+# MY_CASES_CSS (cards / badges / timeline / expansion) is intentionally
+# *not* imported — those rules target DOM the admin app doesn't render,
+# so they'd just be wasted bytes and a small re-introduction risk.
+ADMIN_CSS = """
+:root {
+  --ds-primary: #0A5E56;
+  --ds-primary-mid: #3D8B82;
+  --ds-primary-light: #DFF0ED;
+  --ds-accent: #B85D3A;
+  --ds-text: #2C2C2C;
+  --ds-text-muted: #6B6B6B;
+  --ds-border: #C5CDD6;
+  --ds-bg: #EEF5F4;
+  --ds-surface: #DFEBE9;
+}
+
+/* ── Identity line + tab labels ── */
+#admin-identity p,
+#admin-identity {
+  font-family: 'Fraunces', Georgia, serif !important;
+  font-size: 22px !important;
+  font-weight: 600 !important;
+  color: var(--ds-primary) !important;
+  letter-spacing: -0.01em;
+  margin: 8px 0 12px 0;
+}
+.gradio-container button[role="tab"],
+.gradio-container .tab-nav button {
+  font-family: 'Fraunces', Georgia, serif !important;
+  font-size: 18px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em;
+  padding: 10px 18px !important;
+  color: var(--ds-text) !important;
+}
+
+/* ── Brand-teal tab indicator (not Gradio default orange) ── */
+.gradio-container button[role="tab"][aria-selected="true"],
+.gradio-container .tab-nav button.selected {
+  color: var(--ds-primary) !important;
+  border-bottom-color: var(--ds-primary) !important;
+  box-shadow: inset 0 -3px 0 var(--ds-primary) !important;
+}
+
+/* ── DataFrame row hover + selection — matches the surgeon app's
+   gr.DataFrame styling so the two surfaces feel like one product. ── */
+.gradio-container [data-testid*="dataframe"] tbody tr,
+.gradio-container .table-wrap tbody tr {
+  cursor: pointer;
+}
+.gradio-container [data-testid*="dataframe"] tbody tr:hover,
+.gradio-container .table-wrap tbody tr:hover {
+  background-color: var(--ds-primary-light) !important;
+}
+.gradio-container [data-testid*="dataframe"] tbody tr:has(td:focus),
+.gradio-container [data-testid*="dataframe"] tbody tr:has(td.selected),
+.gradio-container .table-wrap tbody tr:has(td:focus),
+.gradio-container .table-wrap tbody tr:has(td.selected) {
+  background-color: var(--ds-surface) !important;
+}
+.gradio-container [data-testid*="dataframe"] td:focus,
+.gradio-container [data-testid*="dataframe"] td.selected,
+.gradio-container .table-wrap td:focus,
+.gradio-container .table-wrap td.selected {
+  outline: none !important;
+  box-shadow: none !important;
+  border-color: var(--ds-border) !important;
+}
+"""
+
+
+# Same brand theme the surgeon app uses — swaps Gradio's default orange
+# primary_hue for teal so buttons, focus rings, sliders, and the queue
+# spinner all pick up brand colors without per-component overrides.
+ADMIN_THEME = gr.themes.Default(
+    primary_hue="teal",
+    secondary_hue="teal",
+    neutral_hue="slate",
+)
 
 
 def build_admin_app() -> gr.Blocks:
@@ -637,7 +716,7 @@ def build_admin_app() -> gr.Blocks:
         title="Admin — surgical-cv",
         analytics_enabled=False,
     ) as blocks:
-        identity_md = gr.Markdown()
+        identity_md = gr.Markdown(elem_id="admin-identity")
 
         with gr.Tabs():
             with gr.Tab("Global Dashboard") as dashboard_tab:

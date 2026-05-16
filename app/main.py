@@ -56,7 +56,7 @@ from app.repos import (
     SqliteAttentionItemsRepository,
     SqlitePicklistRepository,
 )
-from app.admin_app import ADMIN_CSS, build_admin_app
+from app.admin_app import ADMIN_CSS, ADMIN_THEME, build_admin_app
 from app.scopes import AdminScope, SurgeonScope, UserScope
 from app.surgeon_app import SURGEON_CSS, SURGEON_THEME, build_surgeon_app
 
@@ -396,5 +396,6 @@ gr.mount_gradio_app(
     build_admin_app(),
     path="/admin",
     auth_dependency=_gradio_auth_dep("admin"),
+    theme=ADMIN_THEME,
     css=ADMIN_CSS,
 )
