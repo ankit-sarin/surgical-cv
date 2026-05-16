@@ -75,17 +75,17 @@ def test_intake_tab_state_count_unchanged_at_thirteen():
     for the Intake tab must hold (show_more was hoisted up but is still
     counted among them).
 
-    Brief #3.1.1 collapsed both card-pool tabs to a constant number of
-    states per tab (no per-slot fanout): My Cases owns
-    ``expanded_case_id_state`` + ``visible_cases_state`` (2 states),
-    AR owns ``visible_attention_state`` (1 state). Back out those tab
-    contributions so this test keeps watching Intake drift only."""
+    Brief #3.1.7 reverted My Cases to gr.DataFrame; the DataFrame
+    layout uses zero gr.State seams (event-driven via .select(), not
+    state-driven). AR keeps its ``visible_attention_state`` (1
+    state). Back out AR's contribution so this test watches Intake
+    drift only."""
     blocks = build_surgeon_app()
     total_states = sum(
         1 for c in blocks.blocks.values() if isinstance(c, gr.State)
     )
     ar_states = 1  # visible_attention_state
-    my_cases_states = 2  # expanded_case_id_state + visible_cases_state
+    my_cases_states = 0  # gr.DataFrame revert — no states on My Cases
     intake_states = total_states - ar_states - my_cases_states
     assert intake_states == 13
 

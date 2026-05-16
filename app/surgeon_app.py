@@ -47,7 +47,6 @@ from app.intake.submit import (
 )
 from app.phi import scan_for_phi
 from app.repos import (
-    CaseManifestRow,
     CsvCaseManifestRepository,
     CsvCaseRepository,
     CsvPipelineStateRepository,
@@ -65,15 +64,30 @@ from pipeline.grouping import group_segments
 # Read once at module load; runtime reconfigurability is a future spec.
 _STUCK_THRESHOLD_MINUTES = int(os.environ.get("STUCK_THRESHOLD_MINUTES", "15"))
 
-# Brief #3.1: My Cases dropped the gr.DataFrame component to work around
-# Gradio issue #12947 (a pre-Svelte-5 reactivity recursion in the Dataframe
-# Svelte component's groupedColumnMode getter that hangs the surgeon's
-# browser within seconds of mounting the tab — Uncaught RangeError:
-# Maximum call stack size exceeded). Replaced with a pre-allocated pool
-# of expandable cards, matching the Action Required idiom. Allocate
-# comfortably so a busy surgeon's full corpus renders; cases beyond the
-# 50th get a "more cases" footer notice when we cross that threshold.
-_MAX_VISIBLE_MY_CASES_SLOTS = 50
+# Brief #3.1.7 — reverted to gr.DataFrame for My Cases. The HTML-cards
+# rewrite in Brief #3.1 introduced a Svelte 5 reactive cycle on tab
+# activation (effect_update_depth_exceeded) that survived seven
+# iterations of structural fixes (#3.1.1 → #3.1.6). The
+# Brief #3.1.6 git-bisect confirmed: at 2b5a167-stripped (My Cases
+# replaced with a placeholder Markdown), both tabs were clean. At
+# 2b5a167-full (50-slot HTML card pool), both tabs hung. The same
+# discriminator held for the @gr.render rewrite in #3.1.4 — fewer
+# components, still hung. Conclusion: any HTML-card rendering in
+# the My Cases tab cycles all tab activations. Reverting to the
+# gr.DataFrame + detail-panel pattern from 7b29277 (which was the
+# last commit where this tab worked) eliminates the cycle. We lose
+# per-card click-to-expand interactivity; we gain a definitively
+# working app.
+_MY_CASES_DF_HEADERS = [
+    "UCD-FIL-ID", "Date", "Procedure", "Approach", "Indication",
+    "Status", "Updated",
+]
+# Six string columns + one HTML column for Status. Gradio 6's
+# DataFrame accepts ``html`` per-column and renders the cell markup
+# intact. OR room lives in the detail panel, not the row, since
+# five identifying columns is already at the readable limit without
+# horizontal scroll on the OR's narrow Citrix browsers.
+_MY_CASES_DF_DATATYPES = ["str", "str", "str", "str", "str", "html", "str"]
 
 _EMPTY_CASES_MARKDOWN = (
     "_No cases yet. Submit your first case via the Intake tab._"
@@ -927,485 +941,247 @@ def _sort_key(case_id: str, case: dict, state: dict | None) -> tuple:
         if parsed is not None:
             has_ts = True
             ts_key = -parsed.timestamp()
-    # Primary key: 0 if a real intake_ts exists (so timestamped rows sort
-    # as a group above the legacy ones), 1 if it doesn't.
     primary = 0 if has_ts else 1
-    # Within the timestamped group: -timestamp (desc by time).
-    # Within the legacy group: -int(case_year) then reverse case_id.
     try:
         year_key = -int(case.get("case_year", "0"))
     except (ValueError, TypeError):
         year_key = 0
-    # Reverse case_id for desc: invert each char's codepoint by negation
-    # via tuple of negated ords. Cheap and total over UCD-FIL-### shape.
     id_key = tuple(-ord(c) for c in case_id)
     return (primary, ts_key, year_key, id_key)
 
 
-def _build_repos_for_my_cases() -> Repos:
-    """Per-render repo bundle. Mirrors ``_scope_from_request`` but exposed
-    here so the My Cases render functions can be called from the timer
-    without re-decoding the session — repos themselves are stateless."""
-    return Repos(
-        case=CsvCaseRepository(),
-        segment=FilesystemRawSegmentRepository(),
-        picklist=SqlitePicklistRepository(),
-        pipeline_state=CsvPipelineStateRepository(),
-        attention=SqliteAttentionItemsRepository(),
-        case_manifest=CsvCaseManifestRepository(),
-    )
+def render_my_cases(request: gr.Request) -> tuple:
+    """Build the My Cases view.
 
+    Returns a 5-tuple matching the outputs wired in ``_build_my_cases``:
+        (cases_df_update, header_text, footer_text,
+         empty_state_update, detail_group_update)
 
-# Brief #3.1 — one entry per case (or per attention-item slot context).
-# The handler grouper below collapses an open attention_items query down
-# to a per-case count for the expansion body.
-def _attention_counts_by_case(items) -> dict[str, int]:
-    """Group an iterable of :class:`AttentionItem` rows by ``case_id`` and
-    return the count per case. Rows with no case_id (worker queue
-    surfaces that don't carry one) are skipped because the surgeon's
-    card view is per-case."""
-    counts: dict[str, int] = defaultdict(int)
-    for it in items:
-        if it.case_id:
-            counts[it.case_id] += 1
-    return dict(counts)
-
-
-# ----- card HTML helpers -----
-
-
-def _format_card_header(
-    case_id: str, case: dict, state: dict | None, badge: BadgeState
-) -> str:
-    """Single-line top row inside the card. Badge then case-id then a
-    procedure / approach / date strip. ``case`` is the dict shape coming
-    out of ``CsvCaseRepository.get_case``; ``state`` is the pipeline_state
-    row dict (or ``None`` for queued cases)."""
-    procedure = case.get("procedure_primary") or "—"
-    approach = case.get("approach") or "—"
-    date_str = _date_for_row(state, case) or "—"
-    summary = f"{escape(procedure)} · {escape(approach)} · {escape(date_str)}"
-    return (
-        '<header class="ds-card-header">'
-        f'{badge_html(badge)}'
-        f'<span class="ds-card-case-id">{escape(case_id)}</span>'
-        f'<span class="ds-card-type-label">{summary}</span>'
-        '</header>'
-    )
-
-
-def _format_card_collapsed_body(case: dict) -> str:
-    """One-liner indication row that always appears under the header,
-    collapsed or expanded — keeps the card readable at a glance."""
-    indication = case.get("indication") or "—"
-    return (
-        '<div class="ds-card-body">'
-        f'<p class="ds-card-description">{escape(indication)}</p>'
-        '</div>'
-    )
-
-
-def _format_expansion_body(
-    case: dict,
-    state: dict | None,
-    badge: BadgeState,
-    *,
-    manifest: "CaseManifestRow | None",
-    attention_count: int,
-) -> str:
-    """The expansion area — pipeline timeline, metadata strip, conditional
-    additional/conversion lines, source segments list, related-attention
-    link. Manifest values take precedence over the case-repo dict for the
-    typed columns; the case dict is the fallback when no manifest row was
-    found (shouldn't happen for owned cases, but defensive)."""
-    parts: list[str] = ['<div class="ds-card-expansion">']
-
-    # Pipeline timeline + last-update timestamp on the same logical line.
-    last_update = _updated_for_row(state) or "—"
-    parts.append(
-        '<p class="ds-card-expansion-line">'
-        '<span class="ds-card-expansion-label">Pipeline:</span></p>'
-    )
-    parts.append(pipeline_timeline_html(state, badge))
-    parts.append(
-        '<p class="ds-card-expansion-line">'
-        f'<span class="ds-card-expansion-label">Last update:</span> '
-        f'{escape(last_update)}'
-        '</p>'
-    )
-
-    or_room = (
-        (manifest.or_room if manifest else None)
-        or case.get("or_room") or "—"
-    )
-    case_year = (
-        (manifest.case_year if manifest else None)
-        or case.get("case_year") or "—"
-    )
-    notes = (manifest.notes if manifest else "") or case.get("notes") or ""
-    notes_display = escape(notes) if notes else "—"
-    parts.append(
-        '<p class="ds-card-expansion-line">'
-        f'<span class="ds-card-expansion-label">OR:</span> {escape(str(or_room))} · '
-        f'<span class="ds-card-expansion-label">Year:</span> {escape(str(case_year))} · '
-        f'<span class="ds-card-expansion-label">Notes:</span> {notes_display}'
-        '</p>'
-    )
-
-    additional = (
-        list(manifest.procedure_additional) if manifest
-        else list(case.get("procedure_additional") or [])
-    )
-    if additional:
-        parts.append(
-            '<p class="ds-card-expansion-line">'
-            '<span class="ds-card-expansion-label">Additional procedure:</span> '
-            f'{escape(", ".join(additional))}'
-            '</p>'
-        )
-
-    conversion_target = (
-        manifest.conversion_target if manifest
-        else case.get("conversion_target") or ""
-    )
-    if conversion_target:
-        parts.append(
-            '<p class="ds-card-expansion-line">'
-            '<span class="ds-card-expansion-label">Conversion:</span> '
-            f'{escape(conversion_target)}'
-            '</p>'
-        )
-
-    segments = list(state.get("raw_segments") or []) if state else []
-    if segments:
-        parts.append(
-            '<p class="ds-card-expansion-line">'
-            '<span class="ds-card-expansion-label">'
-            f'Source segments ({len(segments)}):</span></p>'
-        )
-        parts.append('<ul>')
-        for seg in segments:
-            parts.append(f'<li>{escape(seg)}</li>')
-        parts.append('</ul>')
-    else:
-        parts.append(
-            '<p class="ds-card-expansion-line">'
-            '<span class="ds-card-expansion-label">Source segments:</span> '
-            '(none recorded)'
-            '</p>'
-        )
-
-    if attention_count > 0:
-        plural = "items" if attention_count != 1 else "item"
-        parts.append(
-            '<p class="ds-card-expansion-line">'
-            '<span class="ds-card-expansion-label">'
-            f'Related attention {plural}:</span> {attention_count} — see '
-            'the Action Required tab.'
-            '</p>'
-        )
-
-    parts.append('</div>')
-    return "".join(parts)
-
-
-def _my_case_card_html(
-    case_id: str,
-    case: dict,
-    state: dict | None,
-    badge: BadgeState,
-    manifest: "CaseManifestRow | None",
-    attention_count: int,
-    *,
-    is_expanded: bool,
-) -> str:
-    """Render one full card HTML — collapsed header + body, plus the
-    expansion area when ``is_expanded``. Status stripe is bound to
-    ``badge.value`` via the brand .ds-card-status-* family so the left
-    edge color matches the in-card badge state."""
-    status = badge.value
-    classes = f"ds-card ds-card-expandable ds-card-status-{status}"
-    parts = [
-        f'<article class="{classes}" data-case-id="{escape(case_id)}" '
-        f'data-status="{status}" data-expanded="{str(is_expanded).lower()}">',
-        _format_card_header(case_id, case, state, badge),
-        _format_card_collapsed_body(case),
-    ]
-    if is_expanded:
-        parts.append(
-            _format_expansion_body(
-                case, state, badge,
-                manifest=manifest,
-                attention_count=attention_count,
-            )
-        )
-    parts.append('</article>')
-    return "".join(parts)
-
-
-# ----- render fn -----
-#
-# Brief #3.1.4 — @gr.render dynamic card mount.
-#
-# Prior iterations (Brief #3.1 → #3.1.3) used a pre-allocated 50-slot
-# pool of (gr.Group + gr.HTML + gr.Button) tuples with visibility
-# toggling. Every render emitted 100 component updates, fanning out
-# in Svelte 5's reactive flush and tripping ``effect_update_depth_
-# exceeded`` even after per-slot states were removed, the .change
-# bridge was dropped, and per-session memoization collapsed steady-
-# state updates to ~1. The threshold-hitting fanout was structural to
-# the pre-allocated pool — only mounting cards that actually exist
-# eliminates the substrate entirely.
-#
-# Architecture after this refactor:
-#
-#   _load_my_cases_data(request) → (header, empty_update, footer,
-#                                   visible_cases_payload)
-#       Fetches the data, builds both collapsed_html + expanded_html
-#       per visible case, and emits a 4-element tuple. No per-card
-#       components in the output — just the payload.
-#
-#   @gr.render(inputs=[visible_cases_state, expanded_state])
-#   def render_my_cases_cards(visible_cases, expanded):
-#       For each entry in the payload, mounts gr.Group + gr.HTML +
-#       gr.Button. Keys are stable on case_id (Gradio issues #11469 /
-#       #12625 mitigation — same DOM identity across re-renders so
-#       Svelte's reconciler doesn't tear and rebuild). Each button's
-#       click handler is a fresh closure capturing the case_id.
-#
-#   blocks.load / timer.tick → _load_my_cases_data → writes the four
-#       outputs. visible_cases_state.change auto-triggers @gr.render.
-#
-# No pre-allocated slots, no per-slot states, no .change bridges. The
-# server-side topology stays as clean as Brief #3.1.3 left it, and the
-# frontend Svelte flush only ever sees as many slot updates as there
-# are actual cards to show.
-
-
-def _empty_my_cases_payload(now: datetime) -> tuple:
-    """Output for unauthenticated / no-cases renders: empty-state
-    visible, no cards to mount."""
-    return (
-        "",                                                    # header_md
-        gr.update(value=_EMPTY_CASES_MARKDOWN, visible=True),  # empty_state_md
-        format_footer(now),                                    # footer_md
-        [],                                                    # visible_cases_state
-    )
-
-
-def render_my_cases(
-    expanded_case_id: str | None, request: gr.Request | None
-) -> tuple:
-    """Compute the My Cases data payload. Returns a 4-tuple that wires
-    into ``[header_md, empty_state_md, footer_md, visible_cases_state]``:
-
-        [0]  header_md value (counter strip string)
-        [1]  empty_state_md update (visible toggle)
-        [2]  footer_md value (auto-refresh timestamp)
-        [3]  visible_cases_state list[dict] — each entry:
-                {"case_id", "collapsed_html", "expanded_html"}
-
-    The cards themselves are mounted by the ``@gr.render`` block in
-    :func:`_build_my_cases`, which reads ``visible_cases_state`` plus
-    ``expanded_state`` and dynamically mounts one Group/HTML/Button
-    triple per visible case. This fn produces NO per-card components
-    directly — that's the structural change vs Brief #3.1.3.
-
-    ``expanded_case_id`` is accepted as an arg (kept signature-
-    compatible with previous calls) but read only to validate that
-    it's still in the visible window. The actual expansion is decided
-    inside the @gr.render block per-render using the live state."""
+    Folder slug comes exclusively from the authenticated session — never
+    from form/event data. If the request is unauthenticated (impossible
+    in production because the auth_dep gate already ran, but defensive
+    in tests) we render the empty-state view rather than crashing."""
     scope = _scope_from_request(request)
     now = _utcnow()
     if scope is None:
-        return _empty_my_cases_payload(now)
+        return (
+            gr.update(value=[], visible=False),
+            "",
+            format_footer(now),
+            gr.update(value=_EMPTY_CASES_MARKDOWN, visible=True),
+            gr.update(visible=False),
+        )
 
     case_ids = scope.repos.case.list_owned_by(scope.folder_slug)
     if not case_ids:
-        return _empty_my_cases_payload(now)
+        return (
+            gr.update(value=[], visible=False),
+            "",
+            format_footer(now),
+            gr.update(value=_EMPTY_CASES_MARKDOWN, visible=True),
+            gr.update(visible=False),
+        )
 
     states = scope.repos.pipeline_state.list_for_case_ids(case_ids)
-    attention_flags = scope.repos.attention.has_attention_for_case_ids(case_ids)
-    attention_items = scope.repos.attention.list_for_user(scope.username, "open")
-    attention_counts = _attention_counts_by_case(attention_items)
+    attention = scope.repos.attention.has_attention_for_case_ids(case_ids)
     cases = {cid: scope.repos.case.get_case(cid) or {} for cid in case_ids}
 
     counts: dict[BadgeState, int] = defaultdict(int)
-    ranked: list[tuple] = []
+    rows: list[tuple] = []
     for case_id in case_ids:
         case = cases[case_id]
         state = states.get(case_id)
         badge = derive_badge_state(
             state,
-            attention_flags.get(case_id, False),
+            attention.get(case_id, False),
             now,
             _STUCK_THRESHOLD_MINUTES,
         )
         counts[badge] += 1
-        ranked.append((case_id, case, state, badge))
-    ranked.sort(key=lambda r: _sort_key(r[0], r[1], r[2]))
-    truncated = ranked[:_MAX_VISIBLE_MY_CASES_SLOTS]
+        rows.append((case_id, case, state, badge))
+    rows.sort(key=lambda r: _sort_key(r[0], r[1], r[2]))
 
-    visible_cases_payload: list[dict] = []
-    for case_id, case, state, badge in truncated:
-        manifest = scope.repos.case_manifest.for_case_id(case_id)
-        attention_count = attention_counts.get(case_id, 0)
-        collapsed_html = _my_case_card_html(
-            case_id, case, state, badge,
-            manifest=manifest,
-            attention_count=attention_count,
-            is_expanded=False,
-        )
-        expanded_html = _my_case_card_html(
-            case_id, case, state, badge,
-            manifest=manifest,
-            attention_count=attention_count,
-            is_expanded=True,
-        )
-        visible_cases_payload.append({
-            "case_id": case_id,
-            "collapsed_html": collapsed_html,
-            "expanded_html": expanded_html,
-        })
-
+    df_rows = [
+        [
+            case_id,
+            _date_for_row(state, case),
+            case.get("procedure_primary", ""),
+            case.get("approach", ""),
+            case.get("indication", ""),
+            badge_html(badge),
+            _updated_for_row(state),
+        ]
+        for case_id, case, state, badge in rows
+    ]
     return (
+        gr.update(value=df_rows, visible=True),
         format_counter_strip(counts),
-        gr.update(visible=False),
         format_footer(now),
-        visible_cases_payload,
+        gr.update(visible=False),
+        gr.update(visible=False),
     )
 
 
-def _my_case_click_handler(
-    clicked_case_id: str | None, expanded_case_id: str | None,
-) -> "str | None":
-    """Pure decision: toggle expansion for ``clicked_case_id`` against
-    the current ``expanded_case_id``.
+def _format_metadata_md(case: dict) -> str:
+    additionals = case.get("procedure_additional") or []
+    additional_str = ", ".join(additionals) if additionals else "—"
+    parts = [
+        f"**Year:** {escape(str(case.get('case_year') or '—'))}",
+        f"**OR:** {escape(case.get('or_room') or '—')}",
+        f"**Procedure:** {escape(case.get('procedure_primary') or '—')}",
+        f"**Additional:** {escape(additional_str)}",
+        f"**Approach:** {escape(case.get('approach') or '—')}",
+        f"**Indication:** {escape(case.get('indication') or '—')}",
+    ]
+    md = " · ".join(parts)
+    notes = case.get("notes") or ""
+    if notes:
+        md += f"\n\n**Notes:** {escape(notes)}"
+    return md
 
-    Returns the new ``expanded_case_id`` state value:
-    - ``str`` to expand / swap
-    - ``None`` to collapse (clicked the already-expanded card)
-    - ``None`` for invalid clicks (no case_id) — safe fallback
 
-    Brief #3.1.4: signature simplified vs Brief #3.1.2's
-    ``(slot_index, visible_cases, expanded_case_id)`` because the
-    ``@gr.render`` block has the case_id in scope at mount time —
-    each rendered button closure-captures it directly, no slot
-    indirection."""
-    if not clicked_case_id:
-        return None
-    if expanded_case_id == clicked_case_id:
-        return None  # collapse
-    return clicked_case_id  # expand (or swap)
+def _format_segments_md(state: dict | None) -> str:
+    if state is None:
+        return "_Segments: pending_"
+    segs = state.get("raw_segments") or []
+    if not segs:
+        return "_Segments: (none recorded)_"
+    return "**Segments:** " + ", ".join(escape(s) for s in segs)
+
+
+def _format_timestamps_md(state: dict | None) -> str:
+    if state is None:
+        return "_Timestamps: pending_"
+    pieces = []
+    for label, key in (
+        ("intake", "intake_ts"),
+        ("concat", "concat_ts"),
+        ("deid", "deid_ts"),
+        ("verify", "verify_ts"),
+    ):
+        parsed = _parse_iso_or_none(state.get(key))
+        pieces.append(
+            f"**{label}:** {parsed.strftime('%Y-%m-%d %H:%M') if parsed else '—'}"
+        )
+    return " · ".join(pieces)
+
+
+def _blank_detail_outputs() -> tuple:
+    return (
+        "",   # timeline_html
+        "",   # metadata_md
+        "",   # segments_md
+        "",   # timestamps_md
+        gr.update(visible=False),
+    )
+
+
+def render_detail(evt: gr.SelectData, request: gr.Request) -> tuple:
+    """Render the detail panel for the selected row.
+
+    Defense in depth: re-validate ownership through the case repo even
+    though ``render_my_cases`` only surfaces owned cases. Folder slug
+    comes from the session, never from the SelectData event."""
+    scope = _scope_from_request(request)
+    if scope is None:
+        return _blank_detail_outputs()
+
+    case_id = _extract_case_id_from_select(evt)
+    if not case_id:
+        return _blank_detail_outputs()
+
+    if not scope.repos.case.case_belongs_to(case_id, scope.folder_slug):
+        # Should be unreachable — table only shows owned cases. Fail
+        # silent + invisible rather than raising; the centralized
+        # ScopeViolationError handler is reserved for actual writes.
+        return _blank_detail_outputs()
+
+    case = scope.repos.case.get_case(case_id) or {}
+    state = scope.repos.pipeline_state.get_state(case_id)
+    attention = scope.repos.attention.has_attention_for_case_ids([case_id])
+    badge = derive_badge_state(
+        state,
+        attention.get(case_id, False),
+        _utcnow(),
+        _STUCK_THRESHOLD_MINUTES,
+    )
+    return (
+        pipeline_timeline_html(state, badge),
+        _format_metadata_md(case),
+        _format_segments_md(state),
+        _format_timestamps_md(state),
+        gr.update(visible=True),
+    )
+
+
+def _extract_case_id_from_select(evt: gr.SelectData) -> str | None:
+    """Pull the UCD-FIL-### value out of the SelectData event. Gradio's
+    DataFrame select event exposes ``evt.row_value`` (the full row)
+    plus ``evt.index`` (the [row, col] pair). The first column is
+    always the case id by construction in
+    :data:`_MY_CASES_DF_HEADERS`."""
+    row_value = getattr(evt, "row_value", None)
+    if isinstance(row_value, (list, tuple)) and row_value:
+        candidate = row_value[0]
+        if isinstance(candidate, str):
+            return candidate
+    value = getattr(evt, "value", None)
+    if isinstance(value, str):
+        return value
+    return None
 
 
 def _build_my_cases(blocks: gr.Blocks) -> dict:
-    """Construct the My Cases tab body. Cards mount dynamically via
-    ``@gr.render`` (Brief #3.1.4) — no pre-allocated slot pool. The
-    static surface is: header, empty-state Markdown, footer Markdown,
-    and the two state seams (expanded_state, visible_cases_state).
-
-    Returns a dict of components reachable from outside (tests +
-    timer wiring at the build_surgeon_app level)."""
-    header_md = gr.Markdown("", elem_id="my-cases-header")
-    empty_state_md = gr.Markdown(
-        _EMPTY_CASES_MARKDOWN, visible=True, elem_id="my-cases-empty",
+    """Construct the My Cases tab body. Returns a dict of the
+    components that need to be reachable from outside — primarily for
+    tests and for the polling timer wiring (which lives at the
+    build_surgeon_app level so all timers register on the same blocks
+    object)."""
+    header_md = gr.Markdown("")
+    cases_df = gr.DataFrame(
+        headers=_MY_CASES_DF_HEADERS,
+        datatype=_MY_CASES_DF_DATATYPES,
+        interactive=False,
+        wrap=True,
+        visible=False,
+        elem_id="my-cases-df",
     )
-    # Two states at tab root — no per-slot states.
-    expanded_state = gr.State(None)
-    visible_cases_state = gr.State([])
+    empty_state_md = gr.Markdown(_EMPTY_CASES_MARKDOWN, visible=True)
 
-    # Container for the dynamically-mounted cards. Kept as a static
-    # gr.Group so the @gr.render block has a stable parent for layout +
-    # CSS scoping; the cards themselves mount inside it.
-    with gr.Group(elem_id="my-cases-cards") as cards_container:
-
-        @gr.render(
-            inputs=[visible_cases_state, expanded_state],
-            # ``always_last`` (default) is what we want here — coalesce
-            # bursts of state changes into a single render at the end.
-        )
-        def render_my_cases_cards(visible_cases, expanded):
-            if not visible_cases:
-                return
-            for case_data in visible_cases:
-                case_id = case_data["case_id"]
-                is_expanded = (case_id == expanded)
-                html = (
-                    case_data["expanded_html"] if is_expanded
-                    else case_data["collapsed_html"]
-                )
-                # Stable keys on case_id keep Svelte's reconciler from
-                # tearing and rebuilding the DOM on re-render — the
-                # Gradio issue #11469 / #12625 flicker + state-loss
-                # mitigation. The key tuple includes a per-component
-                # role so the Group, HTML, and Button each get their
-                # own stable identity scoped to the same case_id.
-                with gr.Group(key=("my-case-group", case_id)):
-                    gr.HTML(html, key=("my-case-html", case_id))
-                    btn_label = (
-                        "Hide details" if is_expanded
-                        else "View details"
-                    )
-                    btn = gr.Button(
-                        btn_label,
-                        variant="secondary",
-                        size="sm",
-                        key=("my-case-btn", case_id),
-                    )
-
-                    def _on_click(
-                        current_expanded,
-                        _case_id=case_id,
-                    ):
-                        return _my_case_click_handler(
-                            _case_id, current_expanded,
-                        )
-
-                    btn.click(
-                        _on_click,
-                        inputs=[expanded_state],
-                        outputs=[expanded_state],
-                    )
+    with gr.Group(visible=False, elem_id="my-cases-detail") as detail_group:
+        timeline_html = gr.HTML("")
+        metadata_md = gr.Markdown("")
+        segments_md = gr.Markdown("")
+        timestamps_md = gr.Markdown("")
 
     footer_md = gr.Markdown("", elem_id="my-cases-footer")
     timer = gr.Timer(value=30, active=True)
 
-    # Output ordering — used by render_my_cases and the two
-    # data-refresh triggers below. Only four entries: the static
-    # markdowns plus the visible_cases payload. NO per-card
-    # components in the output tuple.
-    load_outputs: list = [
-        header_md,            # [0]
-        empty_state_md,       # [1]
-        footer_md,            # [2]
-        visible_cases_state,  # [3]
+    render_outputs = [
+        cases_df, header_md, footer_md, empty_state_md, detail_group,
+    ]
+    detail_outputs = [
+        timeline_html, metadata_md, segments_md, timestamps_md, detail_group,
     ]
 
-    blocks.load(
-        render_my_cases,
-        inputs=[expanded_state],
-        outputs=load_outputs,
-    )
-    timer.tick(
-        render_my_cases,
-        inputs=[expanded_state],
-        outputs=load_outputs,
-    )
-    # No explicit click-handler wiring at this scope — each per-card
-    # button has its own click handler bound at @gr.render mount
-    # time. visible_cases_state.change + expanded_state.change auto-
-    # trigger the @gr.render block.
+    blocks.load(render_my_cases, None, render_outputs)
+    timer.tick(render_my_cases, None, render_outputs)
+    cases_df.select(render_detail, None, detail_outputs)
 
     return {
         "header_md": header_md,
+        "cases_df": cases_df,
         "empty_state_md": empty_state_md,
-        "expanded_state": expanded_state,
-        "visible_cases_state": visible_cases_state,
-        "cards_container": cards_container,
+        "detail_group": detail_group,
+        "timeline_html": timeline_html,
+        "metadata_md": metadata_md,
+        "segments_md": segments_md,
+        "timestamps_md": timestamps_md,
         "footer_md": footer_md,
         "timer": timer,
     }
+
+
 
 
 # ----- Action Required tab -----
@@ -1672,6 +1448,35 @@ _SURGEON_APP_CSS = MY_CASES_CSS + """
   color: var(--ds-primary) !important;
   border-bottom-color: var(--ds-primary) !important;
   box-shadow: inset 0 -3px 0 var(--ds-primary) !important;
+}
+
+/* ── Row-level hover + selection on the My Cases DataFrame ──
+   Restored alongside the gr.DataFrame revert (Brief #3.1.7).
+   Gradio's default per-cell orange focus ring is replaced with a
+   whole-row mist-teal hover and a brand-surface active row. CSS-only
+   — the :has() selector lifts the cell-level selection up to the
+   parent row so the whole bar lights up. */
+.gradio-container [data-testid*="dataframe"] tbody tr,
+.gradio-container .table-wrap tbody tr {
+  cursor: pointer;
+}
+.gradio-container [data-testid*="dataframe"] tbody tr:hover,
+.gradio-container .table-wrap tbody tr:hover {
+  background-color: var(--ds-primary-light) !important;
+}
+.gradio-container [data-testid*="dataframe"] tbody tr:has(td:focus),
+.gradio-container [data-testid*="dataframe"] tbody tr:has(td.selected),
+.gradio-container .table-wrap tbody tr:has(td:focus),
+.gradio-container .table-wrap tbody tr:has(td.selected) {
+  background-color: var(--ds-surface) !important;
+}
+.gradio-container [data-testid*="dataframe"] td:focus,
+.gradio-container [data-testid*="dataframe"] td.selected,
+.gradio-container .table-wrap td:focus,
+.gradio-container .table-wrap td.selected {
+  outline: none !important;
+  box-shadow: none !important;
+  border-color: var(--ds-border) !important;
 }
 """
 

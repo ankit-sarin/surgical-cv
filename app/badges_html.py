@@ -145,54 +145,14 @@ MY_CASES_CSS = """
   padding: 48px 16px; margin: 16px 0;
 }
 
-/* Expandable cards — Brief #3.1 variant of .ds-card. Used by surgeon
-   "My Cases" v2 where each card collapses to header-only and expands
-   inline on click. Synced from
-   ~/.claude/skills/digitalsurgeon-brand/assets/gradio-theme.css.
-
-   Brief #3.1.5: hover affordance is shadow-only. The earlier
-   compositor-layer affordance produced the Svelte 5
-   effect_update_depth_exceeded cycle on My Cases mount — see
-   docs/audits/brief_3_1_5_brand_css_cycle.md for the post-mortem and
-   the substrings the regression test forbids. */
-.ds-card-expandable {
-  cursor: pointer;
-}
-.ds-card-expandable:hover {
-  box-shadow: 0 2px 6px rgba(44, 44, 44, 0.08);
-}
-.ds-card-expansion {
-  border-top: 1px solid var(--ds-border);
-  margin-top: 10px;
-  padding-top: 10px;
-  font-size: 13px;
-  color: var(--ds-text);
-}
-.ds-card-expansion ul {
-  margin: 4px 0 4px 0;
-  padding-left: 20px;
-}
-.ds-card-expansion li {
-  margin: 2px 0;
-  font-family: 'IBM Plex Mono', Consolas, monospace;
-  font-size: 12px;
-  color: var(--ds-text-muted);
-}
-.ds-card-expansion-line { margin: 4px 0; line-height: 1.5; }
-.ds-card-expansion-label {
-  font-weight: 500;
-  color: var(--ds-text);
-}
-
-/* Per-case status stripe variants. Mirror the six BadgeState values so
-   the left edge of each My Cases card carries the same signal the
-   in-card status badge does. Compose with .ds-card-expandable. */
-.ds-card-status-queued { border-left-color: var(--ds-border); }
-.ds-card-status-processing { border-left-color: var(--ds-primary); }
-.ds-card-status-complete { border-left-color: var(--ds-success); }
-.ds-card-status-flagged { border-left-color: var(--ds-warning); }
-.ds-card-status-failed { border-left-color: var(--ds-error); }
-.ds-card-status-stuck { border-left-color: var(--ds-warning); }
+/* Brief #3.1.7 — .ds-card-expandable + .ds-card-expansion-* +
+   .ds-card-status-* rules retired alongside the HTML-card My Cases
+   tab. Those classes were exclusive to the Brief #3.1 HTML-cards
+   implementation which we reverted because it triggered a Svelte 5
+   reactive cycle on tab activation (see
+   docs/audits/brief_3_1_7_revert_to_dataframe.md). My Cases is back
+   to gr.DataFrame; the AR tab keeps its `.ds-card` / `.ds-card-
+   severity-*` family (different classes; still in use above). */
 
 /* Pipeline timeline — inline SVG.
    Renders identically across all browsers regardless of CSS box-model
