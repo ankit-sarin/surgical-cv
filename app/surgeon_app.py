@@ -53,10 +53,15 @@ from pipeline.grouping import group_segments
 _STUCK_THRESHOLD_MINUTES = int(os.environ.get("STUCK_THRESHOLD_MINUTES", "15"))
 
 _MY_CASES_DF_HEADERS = [
-    "UCD-FIL-ID", "Date", "Procedure", "Approach", "OR", "Status", "Updated",
+    "UCD-FIL-ID", "Date", "Procedure", "Approach", "Indication",
+    "Status", "Updated",
 ]
-# Six string columns + one HTML column for Status. Gradio's DataFrame
-# renders ``html`` cells with their markup intact rather than escaping.
+# Six string columns + one HTML column for Status. Gradio 6's DataFrame
+# accepts ``html`` per-column (literal type at
+# gradio/components/dataframe.py:82-87) and renders the cell markup intact.
+# OR room is intentionally absent here — it lives in the detail panel
+# only, since five identifying columns is already at the readable limit
+# without horizontal scroll on the OR's narrow Citrix browsers.
 _MY_CASES_DF_DATATYPES = ["str", "str", "str", "str", "str", "html", "str"]
 
 _EMPTY_CASES_MARKDOWN = (
@@ -1000,7 +1005,7 @@ def render_my_cases(request: gr.Request) -> tuple:
             _date_for_row(state, case),
             case.get("procedure_primary", ""),
             case.get("approach", ""),
-            case.get("or_room", ""),
+            case.get("indication", ""),
             badge_html(badge),
             _updated_for_row(state),
         ]
@@ -1128,8 +1133,10 @@ def _build_my_cases(blocks: gr.Blocks) -> dict:
     """Construct the My Cases tab body. Returns a dict of the components
     that need to be reachable from outside — primarily for tests and for
     the polling timer wiring (which lives at the build_surgeon_app level
-    so all timers register on the same blocks object)."""
-    css_html = gr.HTML(f"<style>{MY_CASES_CSS}</style>", visible=False)
+    so all timers register on the same blocks object).
+
+    The badge/timeline CSS now ships through ``gr.Blocks(css=...)`` at
+    the surgeon app's top level, not via a hidden ``gr.HTML`` here."""
     header_md = gr.Markdown("")
     cases_df = gr.DataFrame(
         headers=_MY_CASES_DF_HEADERS,
@@ -1162,7 +1169,6 @@ def _build_my_cases(blocks: gr.Blocks) -> dict:
     cases_df.select(render_detail, None, detail_outputs)
 
     return {
-        "css_html": css_html,
         "header_md": header_md,
         "cases_df": cases_df,
         "empty_state_md": empty_state_md,
@@ -1179,11 +1185,98 @@ def _build_my_cases(blocks: gr.Blocks) -> dict:
 # ----- top-level Blocks build -----
 
 
+# Surgeon-app CSS overlay. Two layers:
+#
+#   1. Brand state tokens + badge/timeline classes (MY_CASES_CSS) so
+#      the My Cases tab's pill + SVG timeline render with brand colors.
+#   2. Surgeon-app-specific overrides for the H2/H3 typography on tabs
+#      and the "Signed in as" line, plus brand-colored tab indicator and
+#      whole-row hover/selection on read-only DataFrames.
+#
+# Loaded via gr.Blocks(css=...) — that's the sanctioned path; injecting a
+# <style> tag through a hidden gr.HTML can be swallowed when Gradio sets
+# display:none on the component wrapper.
+_SURGEON_APP_CSS = MY_CASES_CSS + """
+/* ── Identity line + tab labels ── */
+#surgeon-identity p,
+#surgeon-identity {
+  font-family: 'Fraunces', Georgia, serif !important;
+  font-size: 22px !important;
+  font-weight: 600 !important;
+  color: var(--ds-primary) !important;
+  letter-spacing: -0.01em;
+  margin: 8px 0 12px 0;
+}
+.gradio-container button[role="tab"],
+.gradio-container .tab-nav button {
+  font-family: 'Fraunces', Georgia, serif !important;
+  font-size: 18px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em;
+  padding: 10px 18px !important;
+  color: var(--ds-text) !important;
+}
+
+/* ── Tab indicator: brand teal, not Gradio's default orange ── */
+.gradio-container button[role="tab"][aria-selected="true"],
+.gradio-container .tab-nav button.selected {
+  color: var(--ds-primary) !important;
+  border-bottom-color: var(--ds-primary) !important;
+  box-shadow: inset 0 -3px 0 var(--ds-primary) !important;
+}
+
+/* ── Row-level hover + selection on read-only DataFrames ──
+   Gradio's default per-cell orange focus ring is replaced with a
+   whole-row mist-teal hover and a brand-surface active row. CSS-only —
+   the :has() selector lifts the cell-level selection up to the parent
+   row so the whole bar lights up. */
+.gradio-container [data-testid*="dataframe"] tbody tr,
+.gradio-container .table-wrap tbody tr {
+  cursor: pointer;
+}
+.gradio-container [data-testid*="dataframe"] tbody tr:hover,
+.gradio-container .table-wrap tbody tr:hover {
+  background-color: var(--ds-primary-light) !important;
+}
+.gradio-container [data-testid*="dataframe"] tbody tr:has(td:focus),
+.gradio-container [data-testid*="dataframe"] tbody tr:has(td.selected),
+.gradio-container .table-wrap tbody tr:has(td:focus),
+.gradio-container .table-wrap tbody tr:has(td.selected) {
+  background-color: var(--ds-surface) !important;
+}
+.gradio-container [data-testid*="dataframe"] td:focus,
+.gradio-container [data-testid*="dataframe"] td.selected,
+.gradio-container .table-wrap td:focus,
+.gradio-container .table-wrap td.selected {
+  outline: none !important;
+  box-shadow: none !important;
+  border-color: var(--ds-border) !important;
+}
+"""
+
+
+# Brand teal in place of Gradio's default orange primary_hue. The brand
+# CSS overrides backgrounds and text; this swaps the underlying token so
+# anything we don't explicitly override (focus rings on inputs, link
+# hover states, etc.) also picks up brand colors instead of orange.
+#
+# In Gradio 6 the theme= and css= kwargs moved from gr.Blocks() to
+# launch() / mount_gradio_app(). We surface them as module attributes
+# so app.main wires them through ``gr.mount_gradio_app(theme=..., css=...)``.
+SURGEON_THEME = gr.themes.Default(
+    primary_hue="teal",
+    secondary_hue="teal",
+    neutral_hue="slate",
+)
+SURGEON_CSS = _SURGEON_APP_CSS
+
+
 def build_surgeon_app() -> gr.Blocks:
     with gr.Blocks(
-        title="Surgeon — surgical-cv", analytics_enabled=False
+        title="Surgeon — surgical-cv",
+        analytics_enabled=False,
     ) as blocks:
-        identity_md = gr.Markdown()
+        identity_md = gr.Markdown(elem_id="surgeon-identity")
         with gr.Tabs():
             with gr.Tab("Intake"):
                 # Shared state across sections — Section 5 consumes all

@@ -103,6 +103,73 @@ def test_my_cases_blocks_carries_dataframe_with_status_column():
     assert "Status" in df.headers
 
 
+def test_my_cases_columns_swap_or_for_indication():
+    """Brief #2.5 column swap: OR is dropped from the DataFrame (it
+    lives in the detail panel only); Indication takes its place."""
+    from app.surgeon_app import _MY_CASES_DF_HEADERS
+
+    assert _MY_CASES_DF_HEADERS == [
+        "UCD-FIL-ID", "Date", "Procedure", "Approach", "Indication",
+        "Status", "Updated",
+    ]
+    # Belt + suspenders: OR is gone, Indication is present.
+    assert "OR" not in _MY_CASES_DF_HEADERS
+    assert "Indication" in _MY_CASES_DF_HEADERS
+
+
+def test_my_cases_status_column_uses_html_datatype():
+    """Status column is per-column HTML so the badge ``<span>`` renders
+    instead of escaping. Regression guard for the bug observed in
+    production (badge HTML showing as literal ``&lt;span``)."""
+    from app.surgeon_app import _MY_CASES_DF_DATATYPES, _MY_CASES_DF_HEADERS
+
+    status_idx = _MY_CASES_DF_HEADERS.index("Status")
+    assert _MY_CASES_DF_DATATYPES[status_idx] == "html"
+
+
+def test_surgeon_css_constant_carries_brand_classes():
+    """CSS is wired through ``gr.mount_gradio_app(css=...)`` (Gradio 6
+    moved theme/css off gr.Blocks). The surgeon app exposes the CSS as
+    a module attribute so app.main can pass it through. Regression
+    guard: badge + SVG-timeline classes must be present so the My Cases
+    tab renders branded pills + an unescaped SVG timeline."""
+    from app.surgeon_app import SURGEON_CSS
+
+    assert ".ds-badge" in SURGEON_CSS
+    assert ".ds-timeline-svg" in SURGEON_CSS
+    # Typography overrides also live in SURGEON_CSS — verify the
+    # tab-label / identity rules made it in.
+    assert "surgeon-identity" in SURGEON_CSS
+    assert "Fraunces" in SURGEON_CSS
+
+
+def test_surgeon_theme_uses_teal_primary_hue_not_orange():
+    """Gradio default theme uses primary_hue=colors.orange. Brief #2.5
+    swaps to teal so the active tab indicator + cell focus rings pick
+    up brand colors instead of the system orange. The theme resolves
+    the hue immediately into ``primary_*`` tokens, so we assert against
+    the resolved 500-step color (teal-500 = #14b8a6, orange-500 = #f97316)."""
+    from app.surgeon_app import SURGEON_THEME
+
+    assert SURGEON_THEME.primary_500 == "#14b8a6"  # teal-500
+    # Belt + suspenders: not orange-500.
+    assert SURGEON_THEME.primary_500 != "#f97316"
+
+
+def test_surgeon_app_main_mounts_with_theme_and_css():
+    """Confirm the wiring at the FastAPI mount level — theme + css must
+    be passed through gr.mount_gradio_app or the brand styling never
+    reaches the browser. Catches a regression where the surgeon app is
+    built in isolation but the mount call drops the theme/css kwargs."""
+    import inspect
+
+    import app.main as main_mod
+    src = inspect.getsource(main_mod)
+    # The surgeon mount block must include both theme= and css= kwargs.
+    assert "theme=SURGEON_THEME" in src
+    assert "css=SURGEON_CSS" in src
+
+
 def test_my_cases_blocks_carries_30s_timer():
     from app.surgeon_app import build_surgeon_app
 
@@ -219,9 +286,12 @@ def test_render_my_cases_with_verified_state_shows_complete_badge(
     out = render_my_cases(_fake_request_for("asarin"))
     df_update, header, *_ = out
     rows = df_update["value"]
-    # Status column is index 5; check the badge HTML shows complete.
+    # Status column is index 5; check the badge HTML shows complete and
+    # carries the brand badge class so the cell renders as a pill rather
+    # than escaped text.
     status_cells = [r[5] for r in rows]
     assert all('data-badge="complete"' in c for c in status_cells)
+    assert all('class="ds-badge ds-badge-complete"' in c for c in status_cells)
     assert "2 complete" in header
 
 
@@ -283,13 +353,63 @@ def test_render_detail_for_owned_case_renders_panel(
     evt = types.SimpleNamespace(row_value=["UCD-FIL-001"], index=[0, 0])
     out = render_detail(evt, _fake_request_for("asarin"))
     timeline, metadata, segments, timestamps, group_update = out
-    assert "ds-timeline" in timeline
+    # Timeline is inline SVG (not div+span) — the brief acceptance asks
+    # for an unescaped ``<svg`` in the rendered output. Regression guard
+    # for the production bug where the timeline was rendering escaped.
+    assert timeline.startswith("<svg")
+    assert "ds-timeline-svg" in timeline
+    assert "<text" in timeline  # step labels are <text> elements
     assert "Procedure" in metadata
     assert "seg-a.mp4" in segments
     assert "seg-b.mp4" in segments
     assert "intake:" in timestamps
     assert "verify:" in timestamps
     assert group_update["visible"] is True
+
+
+def test_render_detail_emits_unescaped_svg(
+    app_env, monkeypatch, tmp_path
+):
+    """Render-level integration: call render_detail and confirm the
+    string going into the gr.HTML component contains a literal ``<svg``,
+    not ``&lt;svg``. Catches the regression where html.escape (or a
+    Markdown-component-as-output mistake) swallows the SVG markup."""
+    from app.surgeon_app import render_detail
+    _seed_pipeline_state(monkeypatch, tmp_path, [
+        {
+            "ucd_fil_id": "UCD-FIL-001",
+            "raw_segments": ["a.mp4"],
+            "stage": "verified",
+            "intake_ts": "2026-05-12T08:00:00+00:00",
+            "verify_ts": "2026-05-12T10:00:00",
+        },
+    ])
+    evt = types.SimpleNamespace(row_value=["UCD-FIL-001"], index=[0, 0])
+    timeline, *_ = render_detail(evt, _fake_request_for("asarin"))
+    assert "<svg" in timeline
+    assert "&lt;svg" not in timeline
+
+
+def test_render_my_cases_emits_indication_not_or(
+    app_env, monkeypatch, tmp_path
+):
+    """Verify the row builder pulls ``indication`` not ``or_room`` into
+    column index 4 — Brief #2.5 column swap."""
+    from app.surgeon_app import (
+        _MY_CASES_DF_HEADERS, render_my_cases,
+    )
+    _seed_pipeline_state(monkeypatch, tmp_path, [])
+
+    out = render_my_cases(_fake_request_for("asarin"))
+    df_update, *_ = out
+    rows = df_update["value"]
+    indication_idx = _MY_CASES_DF_HEADERS.index("Indication")
+    # asarin's seeded cases use "Colorectal cancer" for indication.
+    assert all(r[indication_idx] == "Colorectal cancer" for r in rows)
+    # And the OR room ("OR 4") must NOT show up anywhere in the row —
+    # it's intentionally absent from the table.
+    for r in rows:
+        assert "OR 4" not in r
 
 
 def test_polling_render_yields_fresh_footer(app_env, monkeypatch, tmp_path):

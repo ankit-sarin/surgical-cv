@@ -57,7 +57,7 @@ from app.repos import (
     SqlitePicklistRepository,
 )
 from app.scopes import AdminScope, SurgeonScope, UserScope
-from app.surgeon_app import build_surgeon_app
+from app.surgeon_app import SURGEON_CSS, SURGEON_THEME, build_surgeon_app
 
 
 # ----- HTML helpers (intentionally minimal — no template engine) -----
@@ -386,6 +386,8 @@ gr.mount_gradio_app(
     build_surgeon_app(),
     path="/app",
     auth_dependency=_gradio_auth_dep("surgeon"),
+    theme=SURGEON_THEME,
+    css=SURGEON_CSS,
 )
 gr.mount_gradio_app(
     app,

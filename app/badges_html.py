@@ -26,6 +26,12 @@ from app.badges import BadgeState
 # Synced from ~/.claude/skills/digitalsurgeon-brand/assets/gradio-theme.css
 # (badge + timeline rules only, plus state-token fallbacks so the page
 # renders correctly even if the full brand theme is not loaded).
+#
+# This constant is loaded into the surgeon Blocks via ``gr.Blocks(css=...)``
+# rather than a hidden ``gr.HTML`` so the rules definitely apply — Gradio
+# wraps each component in a div whose ``visible=False`` may cascade to
+# child <style> tags depending on Svelte's render path. The Blocks-level
+# css= is the sanctioned channel.
 MY_CASES_CSS = """
 :root {
   --ds-primary: #0A5E56;
@@ -60,36 +66,47 @@ MY_CASES_CSS = """
   color: var(--ds-warning);
   border-color: var(--ds-warning);
 }
-.ds-timeline {
-  display: flex; align-items: flex-start;
-  font-family: 'IBM Plex Sans', sans-serif;
-  font-size: 12px; color: var(--ds-text-muted);
+
+/* Pipeline timeline — inline SVG.
+   Renders identically across all browsers regardless of CSS box-model
+   quirks; CSS classes on <g>/<circle> drive per-step state colors so
+   markup stays semantic and theme-tokenized. */
+.ds-timeline-svg {
+  display: block;
+  max-width: 480px;
   margin: 8px 0;
+  font-family: 'IBM Plex Sans', sans-serif;
 }
-.ds-timeline-step { flex: 1; text-align: center; position: relative; }
-.ds-timeline-step + .ds-timeline-step::before {
-  content: ''; position: absolute; top: 9px; left: -50%;
-  width: 100%; height: 2px; background-color: var(--ds-border);
+.ds-timeline-svg .ds-timeline-line {
+  stroke: var(--ds-border);
+  stroke-width: 2;
 }
-.ds-timeline-dot {
-  display: inline-block; width: 18px; height: 18px;
-  border-radius: 50%; background-color: var(--ds-bg);
-  border: 2px solid var(--ds-border);
-  margin-bottom: 4px; position: relative; z-index: 1;
+.ds-timeline-svg .ds-timeline-dot-circle {
+  fill: var(--ds-bg);
+  stroke: var(--ds-border);
+  stroke-width: 2;
 }
-.ds-timeline-step.is-filled .ds-timeline-dot {
-  background-color: var(--ds-success); border-color: var(--ds-success);
+.ds-timeline-svg .ds-timeline-step.is-filled .ds-timeline-dot-circle {
+  fill: var(--ds-success);
+  stroke: var(--ds-success);
 }
-.ds-timeline-step.is-current .ds-timeline-dot {
-  background-color: var(--ds-primary); border-color: var(--ds-primary);
+.ds-timeline-svg .ds-timeline-step.is-current .ds-timeline-dot-circle {
+  fill: var(--ds-primary);
+  stroke: var(--ds-primary);
 }
-.ds-timeline-step.is-failed .ds-timeline-dot {
-  background-color: var(--ds-error); border-color: var(--ds-error);
+.ds-timeline-svg .ds-timeline-step.is-failed .ds-timeline-dot-circle {
+  fill: var(--ds-error);
+  stroke: var(--ds-error);
 }
-.ds-timeline-step.is-stuck .ds-timeline-dot {
-  background-color: transparent; border-color: var(--ds-warning);
+.ds-timeline-svg .ds-timeline-step.is-stuck .ds-timeline-dot-circle {
+  fill: transparent;
+  stroke: var(--ds-warning);
 }
-.ds-timeline-label { display: block; font-size: 11px; }
+.ds-timeline-svg .ds-timeline-label {
+  font-size: 11px;
+  fill: var(--ds-text-muted);
+  font-family: 'IBM Plex Sans', sans-serif;
+}
 """
 
 
@@ -170,20 +187,66 @@ def _step_class_for(
     return ""
 
 
+# SVG geometry: viewBox 480 wide, 50 tall; 4 evenly-spaced steps with
+# 30 px side margin so the dots have room.
+_SVG_VIEWBOX = (480, 50)
+_SVG_DOT_RADIUS = 9
+_SVG_DOT_Y = 15
+_SVG_LABEL_Y = 42
+_SVG_SIDE_MARGIN = 30
+
+
+def _svg_step_x_coords() -> list[int]:
+    """Even spacing across viewBox width, accounting for side margin."""
+    n = len(_TIMELINE_STEP_LABELS)
+    width = _SVG_VIEWBOX[0]
+    span = width - 2 * _SVG_SIDE_MARGIN
+    return [
+        _SVG_SIDE_MARGIN + (span * i // (n - 1)) for i in range(n)
+    ]
+
+
 def pipeline_timeline_html(state: dict | None, badge: BadgeState) -> str:
-    """Render the 4-step horizontal timeline. Pure function; ``state`` is
-    the dict shape from PipelineStateRepository (or None for queued/
-    not-yet-dispatched cases)."""
-    steps_html = []
+    """Render the 4-step horizontal pipeline timeline as inline SVG.
+
+    Pure function; ``state`` is the dict shape from PipelineStateRepository
+    (or None for queued / not-yet-dispatched cases). Inline SVG instead of
+    div+span because (a) the brief acceptance asks for ``<svg`` in the
+    rendered output, and (b) SVG renders identically across browsers
+    regardless of column width or CSS quirks — important on the OR's
+    narrow Citrix viewports."""
+    xs = _svg_step_x_coords()
+    width, height = _SVG_VIEWBOX
+
+    parts: list[str] = [
+        f'<svg viewBox="0 0 {width} {height}" '
+        f'class="ds-timeline-svg" '
+        f'xmlns="http://www.w3.org/2000/svg" '
+        f'role="img" aria-label="Pipeline progress">'
+    ]
+
+    # Connecting line — runs through the centers of all dots.
+    parts.append(
+        f'<line class="ds-timeline-line" '
+        f'x1="{xs[0]}" y1="{_SVG_DOT_Y}" '
+        f'x2="{xs[-1]}" y2="{_SVG_DOT_Y}" />'
+    )
+
+    # Per-step group: dot + label, with the state class on the group so
+    # CSS rules can target either piece via the parent.
     for i, label in enumerate(_TIMELINE_STEP_LABELS):
         cls = _step_class_for(i, state, badge)
-        steps_html.append(
-            f'<div class="ds-timeline-step{cls}" data-step="{i}">'
-            f'<span class="ds-timeline-dot"></span>'
-            f'<span class="ds-timeline-label">{escape(label)}</span>'
-            f'</div>'
+        parts.append(
+            f'<g class="ds-timeline-step{cls}" data-step="{i}">'
+            f'<circle class="ds-timeline-dot-circle" '
+            f'cx="{xs[i]}" cy="{_SVG_DOT_Y}" r="{_SVG_DOT_RADIUS}" />'
+            f'<text class="ds-timeline-label" '
+            f'x="{xs[i]}" y="{_SVG_LABEL_Y}" '
+            f'text-anchor="middle">{escape(label)}</text>'
+            f'</g>'
         )
-    return f'<div class="ds-timeline">{"".join(steps_html)}</div>'
+    parts.append('</svg>')
+    return "".join(parts)
 
 
 def format_counter_strip(counts: dict[BadgeState, int]) -> str:
