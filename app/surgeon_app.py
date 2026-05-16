@@ -1278,17 +1278,19 @@ def _my_case_click_handler(
     visible_cases: list[dict] | None,
     expanded_case_id: str | None,
 ) -> "str | None | object":
-    """Toggle the per-card expansion. Returns the new
-    ``expanded_case_id`` state value (``str`` to expand / swap, ``None``
-    to collapse) or :func:`gr.skip` to leave the state untouched when
-    the slot is empty.
+    """Decide the new ``expanded_case_id`` value for a click. Returns
+    ``str`` to expand / swap, ``None`` to collapse, or :func:`gr.skip`
+    when the slot is empty (stale-tab race).
 
-    Brief #3.1.1: the slot index is closure-captured via
-    :func:`functools.partial` at wiring time so each button's handler
-    knows its own position without per-slot state. The visible_cases
-    list resolves slot→case_id at click time, eliminating the per-slot
-    state writes that previously fanned out the Svelte reactive flush
-    into ``effect_update_depth_exceeded``.
+    Brief #3.1.2: pure-decision half. The Gradio wiring in
+    :func:`_build_my_cases` runs this inside a slot-indexed wrapper
+    that folds the re-render into the same click handler — the
+    Brief #3.1.1 pattern of writing only to ``expanded_state`` and
+    relying on ``expanded_state.change`` to re-run render produced
+    the production Svelte ``effect_update_depth_exceeded`` cycle.
+    Folding the re-render into the click handler matches the Action
+    Required tab's pattern (Brief #3) which never hit the bug at 10
+    slots — same shape, no cycle.
 
     Race-graceful: a click on a slot whose case has been concurrently
     moved out of the visible window short-circuits to ``gr.skip()``
@@ -1352,7 +1354,16 @@ def _build_my_cases(blocks: gr.Blocks) -> dict:
     for s in slots:
         render_outputs.extend([s["group"], s["html"]])
 
-    # Render triggers — initial mount, periodic refresh, post-click.
+    # Render triggers — initial mount + periodic refresh.
+    #
+    # Brief #3.1.2: dropped the ``expanded_state.change`` wiring that
+    # Brief #3.1.1 introduced. The .change-fires-render pattern was
+    # the production Svelte ``effect_update_depth_exceeded`` source —
+    # server-side instrumentation confirmed the cycle is purely in
+    # the frontend's reactive flush of state-write-then-re-subscribe.
+    # The Action Required tab (Brief #3) never hit the bug; mirror
+    # its pattern: each click handler returns the full render_outputs
+    # tuple, no separate .change re-render wiring.
     blocks.load(
         render_my_cases,
         inputs=[expanded_state],
@@ -1363,27 +1374,15 @@ def _build_my_cases(blocks: gr.Blocks) -> dict:
         inputs=[expanded_state],
         outputs=render_outputs,
     )
-    # Click handlers write ONLY to expanded_state. Its .change
-    # is the single trigger that re-runs render after a click — no
-    # cycle, no cascade.
-    expanded_state.change(
-        render_my_cases,
-        inputs=[expanded_state],
-        outputs=render_outputs,
-    )
 
     for i, s in enumerate(slots):
         s["btn"].click(
-            # Factory closure — Gradio's argument introspection can't
-            # see through ``functools.partial``'s bound positional arg
-            # and emits "Expected N arguments, received M" warnings on
-            # build. A nested def has the same closure semantics (each
-            # call to the factory creates a fresh ``slot_index``
-            # binding, avoiding the late-binding gotcha) but exposes
-            # the inspected signature cleanly.
+            # Factory closure captures the slot index by value; a
+            # raw lambda would late-bind ``i`` and resolve to the
+            # final slot on every click.
             _make_my_case_slot_handler(i),
             inputs=[visible_cases_state, expanded_state],
-            outputs=[expanded_state],
+            outputs=render_outputs,
         )
 
     return {
@@ -1400,16 +1399,33 @@ def _build_my_cases(blocks: gr.Blocks) -> dict:
 def _make_my_case_slot_handler(slot_index: int):
     """Per-slot click handler factory. Returns a fresh function whose
     closure captures ``slot_index`` by value (each call creates an
-    independent binding). Gradio inspects the returned function's
-    signature for input-count validation — it sees the explicit two-arg
-    signature ``(visible_cases, expanded_case_id)`` cleanly, unlike
-    ``functools.partial`` whose bound-arg layer Gradio's signature
-    walker can't see through."""
+    independent binding).
 
-    def handler(visible_cases, expanded_case_id):
-        return _my_case_click_handler(
+    Brief #3.1.2: the handler now returns the full ``render_my_cases``
+    output tuple — same shape as ``blocks.load`` / ``timer.tick`` — so
+    the click triggers a full re-render in the same round-trip. The
+    previous "click writes ``expanded_state`` and rely on .change to
+    re-render" pattern was the cycle source for the production Svelte
+    ``effect_update_depth_exceeded`` loop.
+
+    The pure-decision :func:`_my_case_click_handler` returns the new
+    ``expanded`` value (or :func:`gr.skip` for stale-tab races); when
+    it skips, the wrapper passes the current expanded value through
+    to render unchanged."""
+
+    def handler(visible_cases, expanded_case_id, request: gr.Request):
+        decision = _my_case_click_handler(
             slot_index, visible_cases, expanded_case_id,
         )
+        # gr.skip() returns a marker dict that's a no-op for state
+        # outputs but isn't a valid ``expanded`` value to thread into
+        # render. Treat it as "no change" and re-render with the
+        # existing value.
+        if isinstance(decision, dict) and decision.get("__type__") == "update":
+            new_expanded = expanded_case_id
+        else:
+            new_expanded = decision
+        return render_my_cases(new_expanded, request)
 
     return handler
 
