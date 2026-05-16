@@ -157,6 +157,36 @@ def test_my_cases_tab_present_in_surgeon_blocks():
     assert "My Cases" in labels
 
 
+def test_all_surgeon_tabs_eager_render_children():
+    """Brief #3.1.6: every ``gr.Tab`` in the surgeon app must declare
+    ``render_children=True`` so its subtree hydrates during the
+    initial page load instead of synchronously on first tab
+    activation. Gradio's default (``render_children=False``)
+    lazy-mounts hidden tab subtrees; the synchronous hydration on
+    first activation trips Svelte 5's flush-depth limit
+    (``effect_update_depth_exceeded``) — see upstream
+    gradio-app/gradio#13285 and #13198.
+
+    Regression guard: any new ``gr.Tab(...)`` added without
+    ``render_children=True`` will reintroduce the cycle on its
+    first activation."""
+    from app.surgeon_app import build_surgeon_app
+
+    blocks = build_surgeon_app()
+    import gradio as gr
+    tabs = [c for c in blocks.blocks.values() if isinstance(c, gr.Tab)]
+    assert len(tabs) == 3, (
+        f"expected 3 tabs (Intake / My Cases / Action Required), "
+        f"got {[t.label for t in tabs]}"
+    )
+    for t in tabs:
+        assert t.render_children is True, (
+            f"gr.Tab(label={t.label!r}) must set render_children=True "
+            f"to avoid the Gradio lazy-mount Svelte cycle on first "
+            f"tab activation (Brief #3.1.6)."
+        )
+
+
 def test_my_cases_has_no_pre_allocated_slot_pool():
     """Brief #3.1.4: cards are mounted dynamically by @gr.render. The
     previous pre-allocated pool of 50 (gr.Group + gr.HTML + gr.Button)

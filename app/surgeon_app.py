@@ -1698,8 +1698,21 @@ def build_surgeon_app() -> gr.Blocks:
         analytics_enabled=False,
     ) as blocks:
         identity_md = gr.Markdown(elem_id="surgeon-identity")
+        # Brief #3.1.6: ``render_children=True`` on every tab forces
+        # Gradio to eager-mount each tab's subtree during the initial
+        # page load instead of lazy-mounting it on first tab switch.
+        # Gradio's default ``render_children=False`` synchronously
+        # hydrates the entire hidden subtree the first time a user
+        # activates a tab, and that synchronous hydration trips
+        # Svelte 5's flush-depth limit (``effect_update_depth_
+        # exceeded``) — see upstream issues gradio-app/gradio#13285
+        # (closed) and #13198 (open) which reproduce the same symptom
+        # we've been chasing across briefs #3.1 → #3.1.5. The fix is
+        # to pay the hydration cost upfront on a single tab-render
+        # pass that Svelte handles cleanly, so subsequent tab
+        # switches are just visibility toggles.
         with gr.Tabs():
-            with gr.Tab("Intake"):
+            with gr.Tab("Intake", render_children=True):
                 # Shared state across sections — Section 5 consumes all
                 # of them at submit time.
                 segments_state = gr.State([])
@@ -1767,9 +1780,9 @@ def build_surgeon_app() -> gr.Blocks:
                 )
 
                 blocks.load(fetch_picklists, None, picklists_state)
-            with gr.Tab("My Cases"):
+            with gr.Tab("My Cases", render_children=True):
                 _build_my_cases(blocks)
-            with gr.Tab("Action Required"):
+            with gr.Tab("Action Required", render_children=True):
                 _build_action_required(blocks)
         blocks.load(_identity, None, identity_md)
     return blocks
