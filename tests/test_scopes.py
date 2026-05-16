@@ -10,6 +10,7 @@ import pytest
 from app.exceptions import ScopeViolationError
 from app.repos import (
     InMemoryAttentionItemsRepository,
+    InMemoryCaseManifestRepository,
     InMemoryCaseRepository,
     InMemoryPicklistRepository,
     InMemoryPipelineStateRepository,
@@ -25,6 +26,7 @@ def _repos(
     picklist=None,
     pipeline_state=None,
     attention=None,
+    case_manifest=None,
 ) -> Repos:
     return Repos(
         case=case or InMemoryCaseRepository(),
@@ -32,6 +34,7 @@ def _repos(
         picklist=picklist or InMemoryPicklistRepository(),
         pipeline_state=pipeline_state or InMemoryPipelineStateRepository(),
         attention=attention or InMemoryAttentionItemsRepository(),
+        case_manifest=case_manifest or InMemoryCaseManifestRepository(),
     )
 
 

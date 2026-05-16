@@ -142,6 +142,7 @@ def test_surgeon_scope_carries_specialty(app_env):
 def test_admin_scope_specialty_is_none():
     from app.repos import (
         InMemoryAttentionItemsRepository,
+        InMemoryCaseManifestRepository,
         InMemoryCaseRepository,
         InMemoryPicklistRepository,
         InMemoryPipelineStateRepository,
@@ -155,6 +156,7 @@ def test_admin_scope_specialty_is_none():
         picklist=InMemoryPicklistRepository(),
         pipeline_state=InMemoryPipelineStateRepository(),
         attention=InMemoryAttentionItemsRepository(),
+        case_manifest=InMemoryCaseManifestRepository(),
     )
     scope = AdminScope("ankitsarin", repos)
     assert scope.specialty is None
@@ -165,6 +167,7 @@ def test_surgeon_scope_specialty_default_none():
     test-fixture path where the scope is built without a user record)."""
     from app.repos import (
         InMemoryAttentionItemsRepository,
+        InMemoryCaseManifestRepository,
         InMemoryCaseRepository,
         InMemoryPicklistRepository,
         InMemoryPipelineStateRepository,
@@ -178,6 +181,7 @@ def test_surgeon_scope_specialty_default_none():
         picklist=InMemoryPicklistRepository(),
         pipeline_state=InMemoryPipelineStateRepository(),
         attention=InMemoryAttentionItemsRepository(),
+        case_manifest=InMemoryCaseManifestRepository(),
     )
     scope = SurgeonScope("asarin", "sarin", repos)
     assert scope.specialty is None

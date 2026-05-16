@@ -21,6 +21,12 @@ from app.repos.attention import (  # noqa: F401  — re-export
     InMemoryAttentionItemsRepository,
     SqliteAttentionItemsRepository,
 )
+from app.repos.case_manifest import (  # noqa: F401  — re-export
+    CaseManifestRepository,
+    CaseManifestRow,
+    CsvCaseManifestRepository,
+    InMemoryCaseManifestRepository,
+)
 from app.repos.cases import (  # noqa: F401  — re-export
     CaseRepository,
     CsvCaseRepository,
@@ -55,3 +61,4 @@ class Repos:
     picklist: PicklistRepository
     pipeline_state: PipelineStateRepository
     attention: AttentionItemsRepository
+    case_manifest: CaseManifestRepository

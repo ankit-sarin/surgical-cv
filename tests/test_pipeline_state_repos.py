@@ -7,12 +7,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from app.repos.pipeline_state import (
     CsvPipelineStateRepository,
     InMemoryPipelineStateRepository,
     state_path,
 )
-from pipeline.schemas import PIPELINE_STATE_COLUMNS, Stage
+from pipeline.schemas import PIPELINE_STATE_COLUMNS, PipelineStateRow, Stage
 
 
 _HEADER = ",".join(PIPELINE_STATE_COLUMNS)
@@ -196,6 +198,57 @@ def test_csv_raw_segments_split_from_pipe(tmp_path):
     repo = CsvPipelineStateRepository(state)
     s = repo.get_state("UCD-FIL-001")
     assert s["raw_segments"] == ["seg-a.mp4", "seg-b.mp4", "seg-c.mp4"]
+
+
+# ----- raw_segments parsing surface (Brief #3.1 precondition) -----
+#
+# Brief #3.1 §4.6: My Cases pulls source segments from
+# ``pipeline_state.raw_segments``. The list[str] surface is already
+# established by ``PipelineStateRow``; these tests freeze that contract
+# (single / multi happy paths + malformed-with-empty-segments rejection)
+# so a future refactor of the row model can't quietly break the
+# card-expansion source-segments display.
+
+
+def test_pipeline_state_row_parses_single_segment():
+    row = PipelineStateRow.from_csv_dict({
+        "ucd_fil_id": "UCD-FIL-001",
+        "raw_segments": "only-seg.mp4",
+        "stage": "intake",
+    })
+    assert row.raw_segments == ["only-seg.mp4"]
+
+
+def test_pipeline_state_row_parses_multi_segments():
+    row = PipelineStateRow.from_csv_dict({
+        "ucd_fil_id": "UCD-FIL-001",
+        "raw_segments": "a.mp4|b.mp4|c.mp4",
+        "stage": "verified",
+    })
+    assert row.raw_segments == ["a.mp4", "b.mp4", "c.mp4"]
+
+
+def test_pipeline_state_row_rejects_empty_raw_segments():
+    """Schema invariant: a state row must reference at least one
+    segment. Empty cell → empty list → ``min_length=1`` rejects."""
+    with pytest.raises(ValueError):
+        PipelineStateRow.from_csv_dict({
+            "ucd_fil_id": "UCD-FIL-001",
+            "raw_segments": "",
+            "stage": "intake",
+        })
+
+
+def test_pipeline_state_row_rejects_malformed_segments_with_empty_element():
+    """``"a.mp4||b.mp4"`` splits into ``["a.mp4", "", "b.mp4"]`` — the
+    empty middle element trips ``_segments_pipe_safe``. Prevents a
+    silently-broken segment list from reaching the surgeon UI."""
+    with pytest.raises(ValueError):
+        PipelineStateRow.from_csv_dict({
+            "ucd_fil_id": "UCD-FIL-001",
+            "raw_segments": "a.mp4||b.mp4",
+            "stage": "verified",
+        })
 
 
 # ----- InMemoryPipelineStateRepository -----

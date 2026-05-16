@@ -76,10 +76,13 @@ def test_intake_tab_state_count_unchanged_at_thirteen():
     counted among them).
 
     Brief #3 added the Action Required tab which allocates 2 states per
-    card slot (item_id_state + action_state), so the global state count
-    is no longer the right signal — back out the AR tab's contribution
-    to keep this test focused on its actual concern (Intake drift)."""
-    from app.surgeon_app import _MAX_VISIBLE_ACTION_CARDS
+    card slot (item_id_state + action_state). Brief #3.1 added the My
+    Cases card pool — one ``case_id_state`` per slot plus a single
+    ``expanded_case_id_state`` for the whole tab. Back out both tab
+    contributions so this test keeps watching Intake drift only."""
+    from app.surgeon_app import (
+        _MAX_VISIBLE_ACTION_CARDS, _MAX_VISIBLE_MY_CASES_SLOTS,
+    )
 
     blocks = build_surgeon_app()
     total_states = sum(
@@ -87,7 +90,9 @@ def test_intake_tab_state_count_unchanged_at_thirteen():
     )
     # AR tab: 2 states per pre-allocated slot.
     ar_states = _MAX_VISIBLE_ACTION_CARDS * 2
-    intake_states = total_states - ar_states
+    # My Cases tab: 1 case_id state per slot + 1 expanded_case_id state.
+    my_cases_states = _MAX_VISIBLE_MY_CASES_SLOTS + 1
+    intake_states = total_states - ar_states - my_cases_states
     assert intake_states == 13
 
 
