@@ -226,6 +226,37 @@ def test_my_cases_has_header_and_footer_and_empty_components():
     assert "my-cases-footer" in md_ids
 
 
+def test_surgeon_app_state_count():
+    """Brief #3.1.1 audit gap closer: hard ceiling on the total number
+    of ``gr.State`` components in the built surgeon Blocks.
+
+    The previous ``test_my_cases_no_per_slot_case_id_states`` /
+    ``test_action_required_no_per_slot_id_states`` checks were
+    qualitative — they bounded the count by ``2 * slot_count`` which is
+    huge headroom. A regression that re-added per-slot states would
+    pass those tests if it stayed under the loose cap, which is exactly
+    how the production Svelte loop slipped through.
+
+    This test sharpens the invariant to a concrete number: 13 Intake
+    seams + 2 My Cases (expanded + visible_cases) + 1 AR
+    (visible_attention) = 16. The cap of 17 leaves room for one tiny
+    future addition without re-opening the floodgates; anything beyond
+    that is a structural regression that must be reviewed before it
+    lands."""
+    from app.surgeon_app import build_surgeon_app
+
+    blocks = build_surgeon_app()
+    import gradio as gr
+    states = [c for c in blocks.blocks.values() if isinstance(c, gr.State)]
+    assert len(states) <= 17, (
+        f"surgeon-app gr.State count regression — expected <= 17, "
+        f"got {len(states)}. Per-slot identity states fan out into "
+        f"Svelte's reactive flush as effect_update_depth_exceeded. "
+        f"Use a single shared list state at tab root, indexed by slot "
+        f"position via closure-captured slot_index."
+    )
+
+
 def test_my_cases_no_per_slot_case_id_states():
     """Brief #3.1.1: per-slot ``case_id_state`` retired. The 50-slot
     pool must not allocate any ``gr.State`` per slot — that fanout was

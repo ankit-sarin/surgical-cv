@@ -449,7 +449,7 @@ def _build_intake_section3(
     indication_state,
 ):
     """Returns the stable or_room textbox handle so Section 5's reset
-    can clear its DOM value (gr.State resets alone don't propagate into
+    can clear its DOM value (state resets alone don't propagate into
     static textboxes — that's the Spec H/I locked pattern)."""
     gr.Markdown("### Section 3 — Case context")
 
@@ -604,7 +604,7 @@ def _empty_picklists() -> dict[str, list[PicklistValue]]:
 def _build_intake_section5(
     parent: gr.Blocks,
     *,
-    # gr.State seams from Sections 1-4 — full reset on success / clear.
+    # State seams from Sections 1-4 — full reset on success / clear.
     segments_state,
     selected_state,
     show_more_state,
@@ -676,7 +676,7 @@ def _build_intake_section5(
         validation_error_md,
         phi_confirm_group,
         phi_confirm_message_md,
-        # 13 gr.State seams (excluding picklists_state — kept loaded):
+        # 13 State seams (excluding picklists_state — kept loaded):
         segments_state,
         selected_state,
         show_more_state,
@@ -1159,7 +1159,7 @@ def _my_case_card_html(
 # slot's click handler closure-captures its slot index and reads the
 # shared list at click time. Render writes (a) the shared list and
 # (b) the per-slot component values (group visibility, html). Render
-# does NOT write back to ``expanded_case_id_state`` — that state
+# does NOT write back to ``expanded_state`` — that state
 # changes only via the click handler, and its ``.change`` event is the
 # single trigger that re-runs render after a click. The cycle is
 # broken structurally, not via a configuration toggle.
@@ -1315,7 +1315,7 @@ def _build_my_cases(blocks: gr.Blocks) -> dict:
     header_md = gr.Markdown("", elem_id="my-cases-header")
     empty_state_md = gr.Markdown(_EMPTY_CASES_MARKDOWN, visible=True)
     # Two states at tab root — no per-slot states (Brief #3.1.1).
-    expanded_case_id_state = gr.State(None)
+    expanded_state = gr.State(None)
     visible_cases_state = gr.State([])
 
     slots: list[dict] = []
@@ -1355,20 +1355,20 @@ def _build_my_cases(blocks: gr.Blocks) -> dict:
     # Render triggers — initial mount, periodic refresh, post-click.
     blocks.load(
         render_my_cases,
-        inputs=[expanded_case_id_state],
+        inputs=[expanded_state],
         outputs=render_outputs,
     )
     timer.tick(
         render_my_cases,
-        inputs=[expanded_case_id_state],
+        inputs=[expanded_state],
         outputs=render_outputs,
     )
-    # Click handlers write ONLY to expanded_case_id_state. Its .change
+    # Click handlers write ONLY to expanded_state. Its .change
     # is the single trigger that re-runs render after a click — no
     # cycle, no cascade.
-    expanded_case_id_state.change(
+    expanded_state.change(
         render_my_cases,
-        inputs=[expanded_case_id_state],
+        inputs=[expanded_state],
         outputs=render_outputs,
     )
 
@@ -1382,14 +1382,14 @@ def _build_my_cases(blocks: gr.Blocks) -> dict:
             # binding, avoiding the late-binding gotcha) but exposes
             # the inspected signature cleanly.
             _make_my_case_slot_handler(i),
-            inputs=[visible_cases_state, expanded_case_id_state],
-            outputs=[expanded_case_id_state],
+            inputs=[visible_cases_state, expanded_state],
+            outputs=[expanded_state],
         )
 
     return {
         "header_md": header_md,
         "empty_state_md": empty_state_md,
-        "expanded_case_id_state": expanded_case_id_state,
+        "expanded_state": expanded_state,
         "visible_cases_state": visible_cases_state,
         "slots": slots,
         "footer_md": footer_md,
