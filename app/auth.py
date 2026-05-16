@@ -273,6 +273,13 @@ def authenticate_dsm(
     err_code = (data.get("error") or {}).get("code")
     # DSM 7 error codes: 403 = 2FA required, 404 = 2FA code rejected,
     # 405 = enforce 2FA. Everything else is a generic invalid-credentials.
+    # 403 has two operationally distinct meanings that look identical here:
+    # (a) account has TOTP enabled, password correct, OTP code missing on
+    # this attempt (resolution: prompt the user for their code); (b) DSM is
+    # system-enforcing 2FA but the account has no TOTP seed paired yet
+    # (resolution: admin pairs an authenticator before the user can log
+    # in). Same status code, different ops fix — don't bisect them in
+    # code, they're identical at the wire layer.
     if err_code in (403, 405) and otp_code is None:
         _log.warning("DSM auth: error.code=%s -> NEEDS_OTP", err_code)
         return DSM_NEEDS_OTP
